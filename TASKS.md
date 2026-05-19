@@ -271,7 +271,7 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ## Phase 2 — Game Engines
 
 ### T-02-01 · GameEngine interface
-- [ ] `internal/games/engine.go`: define shared types and interface
+- [x] `internal/games/engine.go`: define shared types and interface
   ```go
   type Player struct { TelegramUserID int64; DisplayName string }
   type Move  struct { PlayerID int64; Payload map[string]any }
@@ -284,29 +284,29 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
       Validate(state json.RawMessage, move Move) error
   }
   ```
-- [ ] State is always `json.RawMessage` (serializable to JSONB)
-- [ ] All methods are pure — no I/O, no side effects
+- [x] State is always `json.RawMessage` (serializable to JSONB)
+- [x] All methods are pure — no I/O, no side effects
 - **DoD:** Interface compiles; all three engines will implement this interface
 
 ---
 
 ### T-02-02 · Uno engine
-- [ ] `internal/games/uno/engine.go` implements `GameEngine`
-- [ ] `Init`: build 108-card deck, shuffle, deal `hand_size` (default 7) cards per player, flip first discard, set turn order
-- [ ] State shape: `{ draw_pile, discard_pile, hands, current_turn_idx, direction, pending_draw, status }`
-- [ ] `Validate` rules:
+- [x] `internal/games/uno/engine.go` implements `GameEngine`
+- [x] `Init`: build 108-card deck, shuffle, deal `hand_size` (default 7) cards per player, flip first discard, set turn order
+- [x] State shape: `{ draw_pile, discard_pile, hands, current_turn_idx, direction, pending_draw, status }`
+- [x] `Validate` rules:
   - Only current player can move
   - `play_card`: card must be in hand; matches top discard by color or value, OR is Wild
   - Wild/Wild Draw Four: `chosen_color` required
   - `draw`: only allowed when no playable card (or always, configurable)
-- [ ] `Apply` rules:
+- [x] `Apply` rules:
   - Skip → advance 2 turns
   - Reverse → flip `direction`
   - Draw Two → next player draws 2, loses turn
   - Wild Draw Four → next player draws 4, loses turn; validate caller has no matching color card
   - Player plays last card → emit `PLAYER_WON` event
-- [ ] `Evaluate`: game over when any player hand empty; winner = that player
-- [ ] Events: `CARD_PLAYED`, `CARD_DRAWN`, `TURN_SKIPPED`, `DIRECTION_REVERSED`, `PLAYER_WON`, `GAME_OVER`
+- [x] `Evaluate`: game over when any player hand empty; winner = that player
+- [x] Events: `CARD_PLAYED`, `CARD_DRAWN`, `TURN_SKIPPED`, `DIRECTION_REVERSED`, `PLAYER_WON`, `GAME_OVER`
 - **DoD:** Full rules implemented; no I/O; state always serializable
 - **Tests [unit]:**
   - Init: correct card count (108), correct deal
@@ -319,21 +319,21 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ---
 
 ### T-02-03 · Sambung Kata engine + KBBI integration
-- [ ] `internal/games/sambung_kata/engine.go` implements `GameEngine`
-- [ ] `internal/games/sambung_kata/kbbi/` — KBBI validator
+- [x] `internal/games/sambung_kata/engine.go` implements `GameEngine`
+- [x] `internal/games/sambung_kata/kbbi/` — KBBI validator
   - Interface: `type Validator interface { IsValid(word string) bool }`
   - `OfflineValidator`: loads word list from embedded file at startup (`//go:embed kbbi.txt`)
   - `APIValidator`: HTTP call to external KBBI API; configurable URL; 5s timeout
   - Selected by `KBBI_MODE` env at boot
-- [ ] State shape: `{ last_word, used_words []string, current_turn_idx, eliminated []int64, timeout_seconds, status }`
-- [ ] `Validate` rules:
+- [x] State shape: `{ last_word, used_words []string, current_turn_idx, eliminated []int64, timeout_seconds, status }`
+- [x] `Validate` rules:
   - Only current player can move
   - `word` must start with last letter of `last_word` (case-insensitive)
   - `word` must not be in `used_words`
   - `word` must pass KBBI validator
-- [ ] `Apply`: add word to used_words; advance turn; if invalid → emit `PLAYER_ELIMINATED` for current player
-- [ ] `Evaluate`: one player left → game over; winner = last remaining player; score = words submitted
-- [ ] Events: `WORD_ACCEPTED`, `WORD_REJECTED`, `PLAYER_ELIMINATED`, `GAME_OVER`
+- [x] `Apply`: add word to used_words; advance turn; if invalid → emit `PLAYER_ELIMINATED` for current player
+- [x] `Evaluate`: one player left → game over; winner = last remaining player; score = words submitted
+- [x] Events: `WORD_ACCEPTED`, `WORD_REJECTED`, `PLAYER_ELIMINATED`, `GAME_OVER`
 - **DoD:** Offline validator loads without network; API validator interface-compatible; pure engine logic
 - **Tests [unit]:**
   - Valid word starting with correct letter, in KBBI → accepted
@@ -347,22 +347,22 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ---
 
 ### T-02-04 · Truth or Date engine + question bank
-- [ ] `internal/games/truth_or_date/engine.go` implements `GameEngine`
-- [ ] `internal/games/truth_or_date/questions/` — embedded question bank (`//go:embed questions.json`)
+- [x] `internal/games/truth_or_date/engine.go` implements `GameEngine`
+- [x] `internal/games/truth_or_date/questions/` — embedded question bank (`//go:embed questions.json`)
   - Format: `{ "truth": ["...", ...], "date": ["...", ...] }` — minimum 50 questions each
-- [ ] State shape: `{ current_turn_idx, round, responses []Response, current_question, status }`
+- [x] State shape: `{ current_turn_idx, round, responses []Response, current_question, status }`
   - `Response`: `{ player_id, choice, question, answer, skipped }`
-- [ ] `Validate` rules:
+- [x] `Validate` rules:
   - Only current player can move
   - `choice` action: valid values `"truth"` or `"date"`
   - `answer` action: current player must have pending question
   - `skip` action: host only
-- [ ] `Apply`:
+- [x] `Apply`:
   - `choice` → draw random question of that type; store on state
   - `answer` → record free-text answer; advance turn; emit `ANSWER_RECORDED`
   - `skip` → mark skipped; advance turn; emit `QUESTION_SKIPPED`
-- [ ] `Evaluate`: game has no automatic end; only ends via `endSession`; score = turns completed
-- [ ] Events: `QUESTION_DRAWN`, `ANSWER_RECORDED`, `QUESTION_SKIPPED`
+- [x] `Evaluate`: game has no automatic end; only ends via `endSession`; score = turns completed
+- [x] Events: `QUESTION_DRAWN`, `ANSWER_RECORDED`, `QUESTION_SKIPPED`
 - **DoD:** Questions embedded in binary; question draw is deterministic when seeded (testable)
 - **Tests [unit]:**
   - Choice truth → question drawn from truth bank
@@ -375,9 +375,9 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ---
 
 ### T-02-05 · Game engine registry
-- [ ] `internal/games/registry.go`: `Registry` maps `GameSlug → GameEngine`
-- [ ] `NewRegistry() *Registry` — registers all three engines
-- [ ] `Get(slug GameSlug) (GameEngine, error)` — returns `INTERNAL_ERROR` if slug unknown
+- [x] `internal/games/registry.go`: `Registry` maps `GameSlug → GameEngine`
+- [x] `NewRegistry() *Registry` — registers all three engines
+- [x] `Get(slug GameSlug) (GameEngine, error)` — returns `INTERNAL_ERROR` if slug unknown
 - **DoD:** All three slugs resolvable; unknown slug → error
 - **Tests [unit]:** Get each slug → correct engine type; unknown slug → error
 
