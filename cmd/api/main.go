@@ -27,6 +27,9 @@ import (
 	truthordate "github.com/404NFIDv2/bot-game-management/internal/games/truth_or_date"
 	"github.com/404NFIDv2/bot-game-management/internal/games/uno"
 	healthhttp "github.com/404NFIDv2/bot-game-management/internal/health/interface/http"
+	lbapp "github.com/404NFIDv2/bot-game-management/internal/leaderboard/application"
+	lbinfra "github.com/404NFIDv2/bot-game-management/internal/leaderboard/infrastructure"
+	lbhttp "github.com/404NFIDv2/bot-game-management/internal/leaderboard/interface/http"
 	"github.com/404NFIDv2/bot-game-management/internal/middleware"
 	sessionapp "github.com/404NFIDv2/bot-game-management/internal/session/application"
 	sessioninfra "github.com/404NFIDv2/bot-game-management/internal/session/infrastructure"
@@ -91,6 +94,11 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	tgClient := telegram.NewHTTPClient()
 
+	// ── Leaderboard ───────────────────────────────────────────────────────────
+	lbRepo := lbinfra.NewPostgresLeaderboardRepository(pool)
+	lbCache := lbinfra.NewRedisLeaderboardCache(redisClient)
+	lbSvc := lbapp.NewLeaderboardService(lbRepo, lbCache)
+
 	sessionSvc := sessionapp.NewSessionService(
 		botRepo,
 		gameRepo,
@@ -98,7 +106,7 @@ func main() {
 		sessionRepo,
 		sessionCache,
 		gameRegistry,
-		sessionapp.NewNoopScoreCommitter(),
+		lbSvc,
 		time.Duration(cfg.SessionTTLHours)*time.Hour,
 	)
 
@@ -145,6 +153,7 @@ func main() {
 	})
 	gamehttp.NewGameHandler(botGameSvc).RegisterRoutes(openAPI)
 	sessionhttp.NewSessionHandler(sessionSvc).RegisterRoutes(openAPI)
+	lbhttp.NewLeaderboardHandler(lbSvc).RegisterRoutes(openAPI)
 
 	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	addr := fmt.Sprintf(":%d", cfg.AppPort)

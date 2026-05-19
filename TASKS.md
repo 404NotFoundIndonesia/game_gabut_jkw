@@ -505,54 +505,54 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ## Phase 4 — Leaderboard
 
 ### T-04-01 · Leaderboard domain entity & repository interface
-- [ ] `internal/leaderboard/domain/entry.go`: `LeaderboardEntry` + `Leaderboard` structs per PRD §7 + rank field
-- [ ] `LeaderboardRepository` interface:
+- [x] `internal/leaderboard/domain/entry.go`: `LeaderboardEntry` + `Leaderboard` structs per PRD §7 + rank field
+- [x] `LeaderboardRepository` interface:
   - `UpsertEntry(ctx, entry LeaderboardEntry) error` — atomic increment of score/games_played/wins
   - `GetByBot(ctx, botID, pagination) (*Leaderboard, error)`
   - `GetByBotAndGame(ctx, botID, gameID, pagination) (*Leaderboard, error)`
   - `GetGlobal(ctx, pagination) (*Leaderboard, error)`
   - `GetGlobalByGame(ctx, gameID, pagination) (*Leaderboard, error)`
-- [ ] Migration `000005_create_leaderboard.up.sql`: table `leaderboard_entries`; unique constraint on `(bot_id, game_id, telegram_user_id)`; index on `total_score DESC` per scope
+- [x] Migration `000005_create_leaderboard.up.sql`: table `leaderboard_entries`; unique constraint on `(bot_id, game_id, telegram_user_id)`; index on `total_score DESC` per scope
 
 ---
 
 ### T-04-02 · Leaderboard PostgreSQL + Redis repository
-- [ ] `internal/leaderboard/infrastructure/postgres_leaderboard_repository.go`
+- [x] `internal/leaderboard/infrastructure/postgres_leaderboard_repository.go`
   - `UpsertEntry`: `INSERT ... ON CONFLICT DO UPDATE SET total_score = total_score + excluded.total_score, ...`
   - All get queries: `ORDER BY total_score DESC` with `LIMIT/OFFSET`; compute `rank` as `row_number()`
-- [ ] `internal/leaderboard/infrastructure/redis_leaderboard_cache.go`
+- [x] `internal/leaderboard/infrastructure/redis_leaderboard_cache.go`
   - Redis sorted set key pattern: `lb:{scope}:{id}` where scope = `bot`, `bot_game`, `global`, `global_game`
   - `ZADD` with score on upsert; `ZREVRANGE` for top-N reads
   - Cache TTL: 5 minutes; invalidated on upsert
-- [ ] Write path: Postgres upsert first (source of truth) → then Redis `ZADD`
-- [ ] Read path: Redis hit → return ranked list; miss → Postgres query → populate Redis
+- [x] Write path: Postgres upsert first (source of truth) → then Redis `ZADD`
+- [x] Read path: Redis hit → return ranked list; miss → Postgres query → populate Redis
 - **DoD:** Redis sorted set returns correct rank order; Postgres is authoritative; cache invalidated on new score
 - **Tests [int]:** Upsert scores → Redis sorted correctly; expire cache → Postgres query used; multiple bots/games scoped correctly
 
 ---
 
 ### T-04-03 · Leaderboard use cases
-- [ ] `internal/leaderboard/application/leaderboard_service.go`
+- [x] `internal/leaderboard/application/leaderboard_service.go`
   - `CommitSessionScores(ctx, session *GameSession) error` — called by session service on FINISHED; batch upsert all player scores
   - `GetBotLeaderboard(ctx, botID, pagination) (*Leaderboard, error)`
   - `GetBotGameLeaderboard(ctx, botID, gameID, pagination) (*Leaderboard, error)`
   - `GetGlobalLeaderboard(ctx, pagination) (*Leaderboard, error)`
   - `GetGlobalGameLeaderboard(ctx, gameID, pagination) (*Leaderboard, error)`
-- [ ] `CommitSessionScores` is idempotent — re-committing same session_id does not double-count (guard via `session_id` FK or dedupe flag)
+- [x] `CommitSessionScores` is idempotent — re-committing same session_id does not double-count (guard via `session_id` FK or dedupe flag)
 - **DoD:** Double-commit → idempotent; scores aggregated across multiple sessions
 - **Tests [unit]:** Mock repo; commit scores → UpsertEntry called per player; double commit → called once; pagination passed through
 
 ---
 
 ### T-04-04 · Leaderboard HTTP handlers
-- [ ] `internal/leaderboard/interface/http/leaderboard_handler.go`
-- [ ] Wire all 4 leaderboard endpoints per `openapi.yaml`:
+- [x] `internal/leaderboard/interface/http/leaderboard_handler.go`
+- [x] Wire all 4 leaderboard endpoints per `openapi.yaml`:
   - `GET /api/v1/bots/:bot_id/leaderboard` → `getBotLeaderboard`
   - `GET /api/v1/bots/:bot_id/leaderboard/:game_id` → `getBotGameLeaderboard`
   - `GET /api/v1/leaderboard` → `getGlobalLeaderboard`
   - `GET /api/v1/leaderboard/:game_id` → `getGlobalGameLeaderboard`
-- [ ] All accessible by `AdminApiKey` OR `BotApiKey`
-- [ ] `limit` query param: default 10, max 100
+- [x] All accessible by `AdminApiKey` OR `BotApiKey`
+- [x] `limit` query param: default 10, max 100
 - **DoD:** Rank field populated (1-based); response shape matches `openapi.yaml` `Leaderboard` schema; pagination meta included
 - **Tests [int]:** Seed scores → ranks correct; limit=3 → 3 entries; bot_id scoping works
 
