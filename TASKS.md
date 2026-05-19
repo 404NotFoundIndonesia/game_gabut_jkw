@@ -11,123 +11,123 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ## Phase 0 — Project Scaffold
 
 ### T-00-01 · Go module & folder structure
-- [ ] Init Go module (`go mod init`)
-- [ ] Create full DDD folder tree per PRD §5.1:
+- [x] Init Go module (`go mod init`)
+- [x] Create full DDD folder tree per PRD §5.1:
   `cmd/api/`, `internal/{bot,game,session,leaderboard}/`, `internal/games/{uno,sambung_kata,truth_or_date}/`, `pkg/{logger,validator,pagination,errors}/`, `migrations/`, `docker/`
-- [ ] Add `.gitignore` (Go standard + `.env*`)
-- [ ] Add `.env.example` with all vars from PRD §12
+- [x] Add `.gitignore` (Go standard + `.env*`)
+- [x] Add `.env.example` with all vars from PRD §12
 - **DoD:** `go build ./...` succeeds from repo root; folder tree matches PRD §5.1 exactly
 
 ---
 
 ### T-00-02 · Shared packages — `pkg/errors`
-- [ ] Define typed `AppError` struct: `code string`, `message string`, `details []FieldError`, `httpStatus int`
-- [ ] Define sentinel error codes: `NOT_FOUND`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `CONFLICT`, `UNPROCESSABLE`, `INTERNAL_ERROR`
-- [ ] Helper constructors: `NotFound()`, `Validation()`, `Conflict()`, `Unprocessable()`, `Internal()`
+- [x] Define typed `AppError` struct: `code string`, `message string`, `details []FieldError`, `httpStatus int`
+- [x] Define sentinel error codes: `NOT_FOUND`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `CONFLICT`, `UNPROCESSABLE`, `INTERNAL_ERROR`
+- [x] Helper constructors: `NotFound()`, `Validation()`, `Conflict()`, `Unprocessable()`, `Internal()`
 - **DoD:** All constructors return correct `httpStatus`; error unwrapping works
 - **Tests [unit]:** One test per constructor verifying code, message, status
 
 ---
 
 ### T-00-03 · Shared packages — `pkg/logger`
-- [ ] Structured JSON logger wrapping `log/slog`
-- [ ] Log levels controlled by `LOG_LEVEL` env var
-- [ ] Fields: `level`, `time`, `msg`, plus arbitrary key-value pairs
-- [ ] Never log values tagged as sensitive (token, password, key)
+- [x] Structured JSON logger wrapping `log/slog`
+- [x] Log levels controlled by `LOG_LEVEL` env var
+- [x] Fields: `level`, `time`, `msg`, plus arbitrary key-value pairs
+- [x] Never log values tagged as sensitive (token, password, key)
 - **DoD:** Logger outputs valid JSON; `LOG_LEVEL=debug` shows debug lines; `LOG_LEVEL=warn` suppresses info
 - **Tests [unit]:** Verify output is valid JSON; verify level filtering
 
 ---
 
 ### T-00-04 · Shared packages — `pkg/validator`
-- [ ] Thin wrapper around `github.com/go-playground/validator/v10`
-- [ ] Returns `[]FieldError{Field, Message}` on failure
-- [ ] Integrates with `pkg/errors` `Validation()` constructor
+- [x] Thin wrapper around `github.com/go-playground/validator/v10`
+- [x] Returns `[]FieldError{Field, Message}` on failure
+- [x] Integrates with `pkg/errors` `Validation()` constructor
 - **DoD:** Validates struct tags; returns field-level errors matching `ApiError.details` schema in `openapi.yaml`
 - **Tests [unit]:** Valid struct → no error; missing required field → FieldError with correct field name
 
 ---
 
 ### T-00-05 · Shared packages — `pkg/pagination`
-- [ ] `Params` struct: `Limit int`, `Offset int`
-- [ ] `ParseFromQuery(limit, offset string) (Params, error)` — defaults: limit=10, max=100
-- [ ] `Meta` struct matching `openapi.yaml` `Meta` schema: `Total`, `Limit`, `Offset`
+- [x] `Params` struct: `Limit int`, `Offset int`
+- [x] `ParseFromQuery(limit, offset string) (Params, error)` — defaults: limit=10, max=100
+- [x] `Meta` struct matching `openapi.yaml` `Meta` schema: `Total`, `Limit`, `Offset`
 - **DoD:** Out-of-range limit/offset returns validation error; defaults applied when params absent
 - **Tests [unit]:** Test defaults, max clamp, negative offset rejection
 
 ---
 
 ### T-00-06 · HTTP response envelope helper
-- [ ] `pkg/response` package
-- [ ] `Success(data any, meta *Meta) EnvelopeResponse` — `success: true`
-- [ ] `Error(err *AppError) EnvelopeResponse` — `success: false`
-- [ ] JSON marshalling matches `openapi.yaml` `SuccessEnvelope` / `ErrorEnvelope` exactly
+- [x] `pkg/response` package
+- [x] `Success(data any, meta *Meta) EnvelopeResponse` — `success: true`
+- [x] `Error(err *AppError) EnvelopeResponse` — `success: false`
+- [x] JSON marshalling matches `openapi.yaml` `SuccessEnvelope` / `ErrorEnvelope` exactly
 - **DoD:** Marshal output matches spec shape; null `meta` omitted when not provided
 - **Tests [unit]:** Marshal both envelope types; compare JSON field presence
 
 ---
 
 ### T-00-07 · Config loader
-- [ ] `internal/config` package reads all env vars from PRD §12
-- [ ] Uses `github.com/kelseyhightower/envconfig` or `github.com/caarlos0/env`
-- [ ] Fails fast at boot if required vars (`DB_DSN`, `REDIS_URL`, `ADMIN_API_KEY`, `BOT_TOKEN_ENCRYPTION_KEY`) are absent
+- [x] `internal/config` package reads all env vars from PRD §12
+- [x] Uses stdlib `os.Getenv` with explicit defaults — no extra dependency
+- [x] Fails fast at boot if required vars (`DB_DSN`, `REDIS_URL`, `ADMIN_API_KEY`, `BOT_TOKEN_ENCRYPTION_KEY`) are absent
 - **DoD:** Missing required var → process exits with clear error; optional vars use defaults from PRD §12
 - **Tests [unit]:** Test default values; test required-var absence triggers error
 
 ---
 
 ### T-00-08 · Database connection + migration runner
-- [ ] PostgreSQL connection via `pgx/v5` pool; pool settings configurable via `DB_DSN`
-- [ ] `golang-migrate` wired to `migrations/` folder; runs on startup before HTTP server starts
-- [ ] Readiness check waits for migration to finish
-- [ ] Migration files use timestamp prefix: `YYYYMMDDHHMMSS_<name>.up.sql` / `.down.sql`
+- [x] PostgreSQL connection via `pgx/v5` pool; pool settings configurable via `DB_DSN`
+- [x] `golang-migrate` wired to `migrations/` folder; runs on startup before HTTP server starts
+- [x] Readiness check waits for migration to finish
+- [x] Migration files use timestamp prefix: `YYYYMMDDHHMMSS_<name>.up.sql` / `.down.sql`
 - **DoD:** `docker compose up` runs migrations automatically; `go test` can run against test DB; `migrate down` rolls back cleanly
 - **Tests [int]:** Migration up/down on empty DB succeeds without error
 
 ---
 
 ### T-00-09 · Redis connection
-- [ ] Redis client via `github.com/redis/go-redis/v9`
-- [ ] Ping on startup; surface in readiness probe
-- [ ] Connection pool size configurable (default 10)
+- [x] Redis client via `github.com/redis/go-redis/v9`
+- [x] Ping on startup; surface in readiness probe
+- [x] Connection pool size configurable (default 10)
 - **DoD:** Client connects; ping succeeds; readiness endpoint reflects Redis status
 - **Tests [int]:** Ping succeeds against test Redis instance
 
 ---
 
 ### T-00-10 · HTTP server bootstrap
-- [ ] Wire HTTP server (`github.com/gofiber/fiber/v2` or `github.com/go-chi/chi/v5`) in `cmd/api/main.go`
-- [ ] Graceful shutdown: `SIGTERM`/`SIGINT` → drain in-flight requests → exit
-- [ ] Global error handler maps `*AppError` → envelope response with correct HTTP status
-- [ ] Request ID middleware (UUID per request, added to `X-Request-ID` response header and logger context)
+- [x] Wire HTTP server (`github.com/gofiber/fiber/v2`) in `cmd/api/main.go`
+- [x] Graceful shutdown: `SIGTERM`/`SIGINT` → drain in-flight requests → exit
+- [x] Global error handler maps `*AppError` → envelope response with correct HTTP status
+- [x] Request ID middleware (UUID per request, added to `X-Request-ID` response header and logger context)
 - **DoD:** Server starts; SIGTERM triggers graceful shutdown; unhandled panic returns 500 envelope
 
 ---
 
 ### T-00-11 · Docker — development
-- [ ] `docker/Dockerfile.dev`: base `golang:1.22-alpine`, install `air`, copy source, hot-reload command
-- [ ] `docker-compose.yml`: services `api` (Dockerfile.dev + volume mount), `postgres:16-alpine`, `redis:7-alpine`
-- [ ] Ports: api=8080, postgres=5432, redis=6379
-- [ ] Health checks on postgres and redis services
-- [ ] `.env.local` loaded by compose (`env_file`)
+- [x] `docker/Dockerfile.dev`: base `golang:1.22-alpine`, install `air`, copy source, hot-reload command
+- [x] `docker-compose.yml`: services `api` (Dockerfile.dev + volume mount), `postgres:16-alpine`, `redis:7-alpine`
+- [x] Ports: api=8080, postgres=5432, redis=6379
+- [x] Health checks on postgres and redis services
+- [x] `.env.local` loaded by compose (`env_file`)
 - **DoD:** `docker compose up` starts all three services; editing a Go file triggers rebuild within 3 seconds; `GET /health` returns 200
 
 ---
 
 ### T-00-12 · Docker — production
-- [ ] `docker/Dockerfile.prod`: multi-stage — stage 1 `golang:1.22-alpine` compiles binary; stage 2 `alpine:3.19` copies binary only
-- [ ] `docker-compose.prod.yml`: services `api`, `postgres:16-alpine`, `redis:7-alpine`, `nginx:alpine`
-- [ ] Postgres and Redis ports NOT exposed externally in prod compose
-- [ ] Nginx reverse-proxies to api on internal network
-- [ ] Health check: `CMD wget -qO- http://localhost:8080/health || exit 1`
+- [x] `docker/Dockerfile.prod`: multi-stage — stage 1 `golang:1.22-alpine` compiles binary; stage 2 `alpine:3.19` copies binary only
+- [x] `docker-compose.prod.yml`: services `api`, `postgres:16-alpine`, `redis:7-alpine`, `nginx:alpine`
+- [x] Postgres and Redis ports NOT exposed externally in prod compose
+- [x] Nginx reverse-proxies to api on internal network
+- [x] Health check: `CMD wget -qO- http://localhost:8080/health || exit 1`
 - **DoD:** `docker compose -f docker-compose.prod.yml build` produces image < 30 MB; no source code in image; `GET /health` returns 200 via nginx
 
 ---
 
 ### T-00-13 · Health & readiness endpoints
-- [ ] `GET /health` → 200 `{ success: true, data: { status: "ok" } }` (always, if process alive)
-- [ ] `GET /ready` → 200 if postgres + redis reachable; 503 if either down; body includes per-dependency status per `openapi.yaml` `ReadinessStatus` schema
-- [ ] No auth required on either endpoint
+- [x] `GET /health` → 200 `{ success: true, data: { status: "ok" } }` (always, if process alive)
+- [x] `GET /ready` → 200 if postgres + redis reachable; 503 if either down; body includes per-dependency status per `openapi.yaml` `ReadinessStatus` schema
+- [x] No auth required on either endpoint
 - **DoD:** Response shapes match `openapi.yaml` exactly; killing postgres → `/ready` returns 503 with `postgres: "down"`
 - **Tests [int]:** Mock DB down → 503; both up → 200
 

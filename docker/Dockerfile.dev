@@ -1,0 +1,18 @@
+FROM golang:1.22-alpine
+
+# Install air for hot-reload and build tools
+RUN apk add --no-cache git curl && \
+    go install github.com/air-verse/air@latest
+
+WORKDIR /app
+
+# Pre-download deps (layer cache)
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Source mounted at runtime via volume
+COPY . .
+
+EXPOSE 8080
+
+CMD ["air", "-c", ".air.toml"]
