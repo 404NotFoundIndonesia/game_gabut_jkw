@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -20,4 +21,6 @@ type SessionRepository interface {
 	FindByBotID(ctx context.Context, botID uuid.UUID, filter SessionFilter, limit, offset int) ([]*GameSession, int, error)
 	FindActiveByChatID(ctx context.Context, botID uuid.UUID, chatID int64) (*GameSession, error)
 	UpdateState(ctx context.Context, id uuid.UUID, state json.RawMessage) error
+	// FindFinishedBefore returns FINISHED sessions whose ended_at is before the given threshold.
+	FindFinishedBefore(ctx context.Context, threshold time.Time, limit int) ([]*GameSession, error)
 }

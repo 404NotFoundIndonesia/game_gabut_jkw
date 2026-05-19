@@ -561,61 +561,61 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ## Phase 5 — Hardening
 
 ### T-05-01 · Rate limiting middleware
-- [ ] `internal/middleware/rate_limit.go`
-- [ ] Per-bot-token rate limit: 60 req/min (sliding window via Redis)
-- [ ] Per-IP rate limit on unauthenticated endpoints: 30 req/min
-- [ ] Returns 429 with `Retry-After` header; body uses error envelope with code `RATE_LIMITED`
+- [x] `internal/middleware/rate_limit.go`
+- [x] Per-bot-token rate limit: 60 req/min (sliding window via Redis)
+- [x] Per-IP rate limit on unauthenticated endpoints: 30 req/min
+- [x] Returns 429 with `Retry-After` header; body uses error envelope with code `RATE_LIMITED`
 - **DoD:** Exceeding limit → 429; `Retry-After` header set correctly; limit resets after window
 - **Tests [int]:** Send 61 requests in 1 minute from same bot token → 61st returns 429
 
 ---
 
 ### T-05-02 · Prometheus metrics
-- [ ] `GET /metrics` endpoint (no auth, separate port optional)
-- [ ] Expose metrics:
+- [x] `GET /metrics` endpoint (no auth, separate port optional)
+- [x] Expose metrics:
   - `http_requests_total{method, path, status}` — counter
   - `http_request_duration_seconds{method, path}` — histogram (buckets: 10ms, 50ms, 100ms, 200ms, 500ms, 1s)
   - `active_sessions_total{bot_id, game_slug}` — gauge
   - `game_moves_total{game_slug}` — counter
   - `leaderboard_cache_hits_total` / `leaderboard_cache_misses_total` — counters
-- [ ] Metrics middleware attached to all routes
+- [x] Metrics middleware attached to all routes
 - **DoD:** `GET /metrics` returns Prometheus text format; `http_request_duration_seconds` histogram has correct buckets
 - **Tests [int]:** Make requests → counters increment; verify metric names in /metrics output
 
 ---
 
 ### T-05-03 · Session archival job
-- [ ] Background goroutine runs every hour
-- [ ] Queries sessions where `status = FINISHED` AND `ended_at < now() - SESSION_TTL_HOURS`
-- [ ] Transitions those sessions to `ARCHIVED`; invalidates Redis cache entries
-- [ ] Logs count of archived sessions per run
+- [x] Background goroutine runs every hour
+- [x] Queries sessions where `status = FINISHED` AND `ended_at < now() - SESSION_TTL_HOURS`
+- [x] Transitions those sessions to `ARCHIVED`; invalidates Redis cache entries
+- [x] Logs count of archived sessions per run
 - **DoD:** Sessions older than TTL archived on next hourly run; no double-archiving
 - **Tests [unit]:** Mock repo; archival finds correct sessions; updates status; invalidates cache
 
 ---
 
 ### T-05-04 · Input sanitization & security hardening
-- [ ] All string inputs trimmed and length-capped per schema constraints
-- [ ] `display_name`, `word`, `answer`, `reason` fields: strip control characters; reject null bytes
-- [ ] SQL: confirm all queries use parameterized statements (audit via code review checklist)
-- [ ] Bot token: never appears in logs, error messages, or response bodies (covered by `BotToken.MarshalJSON`)
-- [ ] `ADMIN_API_KEY` and `BOT_TOKEN_ENCRYPTION_KEY`: never logged
+- [x] All string inputs trimmed and length-capped per schema constraints
+- [x] `display_name`, `word`, `answer`, `reason` fields: strip control characters; reject null bytes
+- [x] SQL: confirm all queries use parameterized statements (audit via code review checklist)
+- [x] Bot token: never appears in logs, error messages, or response bodies (covered by `BotToken.MarshalJSON`)
+- [x] `ADMIN_API_KEY` and `BOT_TOKEN_ENCRYPTION_KEY`: never logged
 - **DoD:** Fuzzing `display_name` with control chars → sanitized or rejected; token fields redacted in all log output
 - **Tests [unit]:** Sanitize function: null byte → stripped; oversized string → truncated/rejected; control chars → stripped
 
 ---
 
 ### T-05-05 · End-to-end test suite
-- [ ] `test/e2e/` folder; uses `docker compose -f docker-compose.yml` test environment
-- [ ] Scenario 1 — Uno game:
+- [x] `test/e2e/` folder; uses `docker compose -f docker-compose.yml` test environment
+- [x] Scenario 1 — Uno game:
   - Register bot → assign Uno → create session → 2 players join → start → play moves until win → verify leaderboard updated
-- [ ] Scenario 2 — Sambung Kata:
+- [x] Scenario 2 — Sambung Kata:
   - Register bot → assign game → create session → players join → start → valid words → invalid word (wrong letter) → player eliminated → verify score
-- [ ] Scenario 3 — Truth or Date:
+- [x] Scenario 3 — Truth or Date:
   - Create session → join → start → pick truth → answer → pick date → skip (host) → end session → verify scores
-- [ ] Scenario 4 — Auth:
+- [x] Scenario 4 — Auth:
   - No key → 401; wrong key → 401; valid admin key → 200; bot key on admin endpoint → 401
-- [ ] Scenario 5 — Leaderboard aggregation:
+- [x] Scenario 5 — Leaderboard aggregation:
   - Two sessions finished → leaderboard ranks correct; global leaderboard includes both bots
 - **DoD:** All 5 scenarios pass in CI against Docker Compose stack; no flakiness over 3 consecutive runs
 - **Tests [e2e]:** As above — HTTP client hits real running stack
@@ -623,14 +623,14 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ---
 
 ### T-05-06 · CI pipeline
-- [ ] GitHub Actions workflow `.github/workflows/ci.yml`
-- [ ] Jobs:
+- [x] GitHub Actions workflow `.github/workflows/ci.yml`
+- [x] Jobs:
   1. `lint`: `golangci-lint run` (fail on any lint error)
   2. `test-unit`: `go test ./... -run Unit -coverprofile=coverage.out`; fail if coverage < 80%
   3. `test-int`: spin up postgres + redis via service containers; `go test ./... -run Integration`
   4. `build`: `docker build -f docker/Dockerfile.prod .`
-- [ ] All jobs run on pull request and push to `main`
-- [ ] Coverage report uploaded as artifact
+- [x] All jobs run on pull request and push to `main`
+- [x] Coverage report uploaded as artifact
 - **DoD:** All 4 jobs green on clean main; coverage gate enforced
 
 ---

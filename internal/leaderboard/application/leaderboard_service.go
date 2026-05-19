@@ -7,6 +7,7 @@ import (
 
 	"github.com/404NFIDv2/bot-game-management/internal/leaderboard/domain"
 	sessiondomain "github.com/404NFIDv2/bot-game-management/internal/session/domain"
+	"github.com/404NFIDv2/bot-game-management/pkg/metrics"
 	"github.com/404NFIDv2/bot-game-management/pkg/pagination"
 )
 
@@ -85,8 +86,10 @@ func (s *LeaderboardService) CommitSessionScores(ctx context.Context, session *s
 // GetByBot returns the bot-scoped leaderboard with cache-aside.
 func (s *LeaderboardService) GetByBot(ctx context.Context, botID uuid.UUID, params pagination.Params) (*domain.Leaderboard, error) {
 	if cached, err := s.cache.GetByBot(ctx, botID, params); err == nil && cached != nil {
+		metrics.LeaderboardCacheHits.Inc()
 		return cached, nil
 	}
+	metrics.LeaderboardCacheMisses.Inc()
 	lb, err := s.repo.GetByBot(ctx, botID, params)
 	if err != nil {
 		return nil, err
@@ -98,8 +101,10 @@ func (s *LeaderboardService) GetByBot(ctx context.Context, botID uuid.UUID, para
 // GetByBotAndGame returns the per-bot, per-game leaderboard with cache-aside.
 func (s *LeaderboardService) GetByBotAndGame(ctx context.Context, botID, gameID uuid.UUID, params pagination.Params) (*domain.Leaderboard, error) {
 	if cached, err := s.cache.GetByBotAndGame(ctx, botID, gameID, params); err == nil && cached != nil {
+		metrics.LeaderboardCacheHits.Inc()
 		return cached, nil
 	}
+	metrics.LeaderboardCacheMisses.Inc()
 	lb, err := s.repo.GetByBotAndGame(ctx, botID, gameID, params)
 	if err != nil {
 		return nil, err
@@ -111,8 +116,10 @@ func (s *LeaderboardService) GetByBotAndGame(ctx context.Context, botID, gameID 
 // GetGlobal returns the global leaderboard with cache-aside.
 func (s *LeaderboardService) GetGlobal(ctx context.Context, params pagination.Params) (*domain.Leaderboard, error) {
 	if cached, err := s.cache.GetGlobal(ctx, params); err == nil && cached != nil {
+		metrics.LeaderboardCacheHits.Inc()
 		return cached, nil
 	}
+	metrics.LeaderboardCacheMisses.Inc()
 	lb, err := s.repo.GetGlobal(ctx, params)
 	if err != nil {
 		return nil, err
@@ -124,8 +131,10 @@ func (s *LeaderboardService) GetGlobal(ctx context.Context, params pagination.Pa
 // GetGlobalByGame returns the game-scoped global leaderboard with cache-aside.
 func (s *LeaderboardService) GetGlobalByGame(ctx context.Context, gameID uuid.UUID, params pagination.Params) (*domain.Leaderboard, error) {
 	if cached, err := s.cache.GetGlobalByGame(ctx, gameID, params); err == nil && cached != nil {
+		metrics.LeaderboardCacheHits.Inc()
 		return cached, nil
 	}
+	metrics.LeaderboardCacheMisses.Inc()
 	lb, err := s.repo.GetGlobalByGame(ctx, gameID, params)
 	if err != nil {
 		return nil, err

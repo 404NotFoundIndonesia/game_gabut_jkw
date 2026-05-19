@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/404NFIDv2/bot-game-management/internal/bot/application"
 	botinfra "github.com/404NFIDv2/bot-game-management/internal/bot/infrastructure"
@@ -36,6 +38,7 @@ import (
 	sessionhttp "github.com/404NFIDv2/bot-game-management/internal/session/interface/http"
 	"github.com/404NFIDv2/bot-game-management/internal/telegram"
 	"github.com/404NFIDv2/bot-game-management/pkg/logger"
+	_ "github.com/404NFIDv2/bot-game-management/pkg/metrics" // register Prometheus metrics
 )
 
 func main() {
@@ -48,7 +51,9 @@ func main() {
 	log := logger.New(cfg.LogLevel)
 	slog.SetDefault(log)
 
-	ctx := context.Background()
+	// ctx is used for the server lifetime; cancelled on shutdown signal.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	// ── Database ──────────────────────────────────────────────────────────────
 	pool, err := database.NewPostgresPool(ctx, cfg.DBDSN)
@@ -114,6 +119,10 @@ func main() {
 	botSvc := application.NewBotService(botRepo, tgClient, cfg.BotTokenEncryptionKey, sessionSvc)
 	botGameSvc := gameapp.NewBotGameService(botRepo, gameRepo, botGameRepo)
 
+	// ── Session archival job ──────────────────────────────────────────────────
+	archivalJob := sessionapp.NewArchivalJob(sessionRepo, sessionCache, time.Duration(cfg.SessionTTLHours)*time.Hour)
+	archivalJob.Start(ctx, time.Hour)
+
 	// ── HTTP server ───────────────────────────────────────────────────────────
 	app := fiber.New(fiber.Config{
 		ErrorHandler:          middleware.ErrorHandler,
@@ -125,6 +134,7 @@ func main() {
 
 	app.Use(recover.New(recover.Config{EnableStackTrace: cfg.IsDevelopment()}))
 	app.Use(middleware.RequestID())
+	app.Use(middleware.Metrics())
 
 	// ── Health (no auth) ──────────────────────────────────────────────────────
 	redisPingerFn := healthhttp.RedisPingerFunc(func(c context.Context) healthhttp.RedisCmd {
@@ -151,16 +161,29 @@ func main() {
 		}
 		return middleware.BotAuth(botRepo, tokenHasher)(c)
 	})
+	// Per-bot rate limit: 60 req/min (applied after auth so bot ID is available).
+	openAPI.Use(middleware.BotRateLimit(redisClient, 60, time.Minute))
+
 	gamehttp.NewGameHandler(botGameSvc).RegisterRoutes(openAPI)
 	sessionhttp.NewSessionHandler(sessionSvc).RegisterRoutes(openAPI)
 	lbhttp.NewLeaderboardHandler(lbSvc).RegisterRoutes(openAPI)
 
+	// ── Prometheus metrics endpoint (no auth) ─────────────────────────────────
+	// Served on a separate net/http mux so it never goes through Fiber middleware.
+	metricsServer := &http.Server{
+		Addr:    fmt.Sprintf(":%d", cfg.MetricsPort),
+		Handler: promhttp.Handler(),
+	}
+	go func() {
+		log.Info("metrics server starting", "addr", metricsServer.Addr)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("metrics server error", "err", err)
+		}
+	}()
+
 	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	addr := fmt.Sprintf(":%d", cfg.AppPort)
 	log.Info("server starting", "addr", addr, "env", cfg.AppEnv)
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		if err := app.Listen(addr); err != nil {
@@ -168,7 +191,7 @@ func main() {
 		}
 	}()
 
-	<-quit
+	<-ctx.Done()
 	log.Info("shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -176,7 +199,9 @@ func main() {
 
 	if err := app.ShutdownWithContext(shutdownCtx); err != nil {
 		log.Error("graceful shutdown failed", "err", err)
-		os.Exit(1)
+	}
+	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+		log.Error("metrics server shutdown failed", "err", err)
 	}
 	log.Info("server stopped gracefully")
 }

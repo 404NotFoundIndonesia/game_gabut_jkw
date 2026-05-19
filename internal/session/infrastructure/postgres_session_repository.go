@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -174,6 +175,31 @@ func (r *PostgresSessionRepository) UpdateState(ctx context.Context, id uuid.UUI
 		return apperrors.Internal("failed to update session state").WithCause(err)
 	}
 	return nil
+}
+
+// FindFinishedBefore returns FINISHED sessions whose ended_at is before the given threshold.
+func (r *PostgresSessionRepository) FindFinishedBefore(ctx context.Context, threshold time.Time, limit int) ([]*domain.GameSession, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at
+		FROM game_sessions
+		WHERE status = 'FINISHED' AND ended_at < $1
+		ORDER BY ended_at ASC
+		LIMIT $2
+	`, threshold, limit)
+	if err != nil {
+		return nil, apperrors.Internal("failed to query finished sessions").WithCause(err)
+	}
+	defer rows.Close()
+
+	var sessions []*domain.GameSession
+	for rows.Next() {
+		s, scanErr := scanSession(rows)
+		if scanErr != nil {
+			return nil, apperrors.Internal("failed to scan session").WithCause(scanErr)
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions, nil
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────

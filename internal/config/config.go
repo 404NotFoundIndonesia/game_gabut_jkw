@@ -11,8 +11,9 @@ import (
 // Required vars are validated at load time; missing ones cause a fatal error.
 type Config struct {
 	// Application
-	AppEnv  string
-	AppPort int
+	AppEnv      string
+	AppPort     int
+	MetricsPort int
 
 	// Database
 	DBDSN string
@@ -41,6 +42,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		AppEnv:          getenv("APP_ENV", "development"),
 		AppPort:         getenvInt("APP_PORT", 8080),
+		MetricsPort:     getenvInt("METRICS_PORT", 9090),
 		DBDSN:           os.Getenv("DB_DSN"),
 		RedisURL:        os.Getenv("REDIS_URL"),
 		AdminAPIKey:     os.Getenv("ADMIN_API_KEY"),

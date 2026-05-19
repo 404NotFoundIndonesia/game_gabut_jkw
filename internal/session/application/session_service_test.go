@@ -103,6 +103,10 @@ func (f *fakeSessionRepo) UpdateState(_ context.Context, id uuid.UUID, state jso
 	return nil
 }
 
+func (f *fakeSessionRepo) FindFinishedBefore(_ context.Context, _ time.Time, _ int) ([]*domain.GameSession, error) {
+	return nil, nil
+}
+
 type fakeStateCache struct {
 	states map[uuid.UUID]json.RawMessage
 }

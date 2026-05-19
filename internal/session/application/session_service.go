@@ -12,6 +12,7 @@ import (
 	"github.com/404NFIDv2/bot-game-management/internal/games"
 	"github.com/404NFIDv2/bot-game-management/internal/session/domain"
 	apperrors "github.com/404NFIDv2/bot-game-management/pkg/errors"
+	"github.com/404NFIDv2/bot-game-management/pkg/metrics"
 )
 
 // ─── Dependency interfaces ────────────────────────────────────────────────────
@@ -256,6 +257,8 @@ func (s *SessionService) StartSession(ctx context.Context, botID, sessionID uuid
 	// Warm the cache with the fresh state.
 	_ = s.cache.SetState(ctx, session.ID, session.State, s.sessionTTL)
 
+	metrics.ActiveSessionsTotal.WithLabelValues(botID.String(), string(game.Slug)).Inc()
+
 	return session, nil
 }
 
@@ -293,6 +296,7 @@ func (s *SessionService) SubmitMove(ctx context.Context, botID, sessionID uuid.U
 	if err != nil {
 		return nil, apperrors.Unprocessable(err.Error())
 	}
+	metrics.GameMovesTotal.WithLabelValues(string(game.Slug)).Inc()
 
 	// Atomic write: Redis first, then Postgres. Roll back Redis on DB failure.
 	if err := s.cache.SetState(ctx, session.ID, newState, s.sessionTTL); err != nil {
@@ -349,6 +353,9 @@ func (s *SessionService) EndSession(ctx context.Context, botID, sessionID uuid.U
 	}
 	_ = s.cache.InvalidateState(ctx, session.ID)
 	_ = s.scoreCommitter.CommitSessionScores(ctx, session)
+	if game, err := s.gameRepo.FindByID(ctx, session.GameID); err == nil {
+		metrics.ActiveSessionsTotal.WithLabelValues(botID.String(), string(game.Slug)).Dec()
+	}
 
 	return session, nil
 }
@@ -424,5 +431,8 @@ func (s *SessionService) finishSession(ctx context.Context, session *domain.Game
 		return err
 	}
 	_ = s.cache.InvalidateState(ctx, session.ID)
+	if game, err := s.gameRepo.FindByID(ctx, session.GameID); err == nil {
+		metrics.ActiveSessionsTotal.WithLabelValues(session.BotID.String(), string(game.Slug)).Dec()
+	}
 	return s.scoreCommitter.CommitSessionScores(ctx, session)
 }

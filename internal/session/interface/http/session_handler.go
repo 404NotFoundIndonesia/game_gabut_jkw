@@ -13,6 +13,7 @@ import (
 	apperrors "github.com/404NFIDv2/bot-game-management/pkg/errors"
 	"github.com/404NFIDv2/bot-game-management/pkg/pagination"
 	"github.com/404NFIDv2/bot-game-management/pkg/response"
+	"github.com/404NFIDv2/bot-game-management/pkg/sanitize"
 	"github.com/404NFIDv2/bot-game-management/pkg/validator"
 )
 
@@ -107,7 +108,7 @@ func (h *SessionHandler) CreateSession(c *fiber.Ctx) error {
 		GameID:         gameID,
 		ChatID:         body.ChatID,
 		TelegramUserID: body.Player.TelegramUserID,
-		DisplayName:    body.Player.DisplayName,
+		DisplayName:    sanitize.DisplayName(body.Player.DisplayName),
 	})
 	if svcErr != nil {
 		return svcErr
@@ -191,7 +192,7 @@ func (h *SessionHandler) JoinSession(c *fiber.Ctx) error {
 
 	session, svcErr := h.svc.JoinSession(c.Context(), botID, sessionID, application.JoinRequest{
 		TelegramUserID: body.TelegramUserID,
-		DisplayName:    body.DisplayName,
+		DisplayName:    sanitize.DisplayName(body.DisplayName),
 	})
 	if svcErr != nil {
 		return svcErr
@@ -285,7 +286,7 @@ func (h *SessionHandler) EndSession(c *fiber.Ctx) error {
 	req := application.EndSessionRequest{
 		CallerTelegramID: body.TelegramUserID,
 		IsAdmin:          !isBotAuth,
-		Reason:           body.Reason,
+		Reason:           sanitize.Reason(body.Reason),
 	}
 
 	session, svcErr := h.svc.EndSession(c.Context(), botID, sessionID, req)
