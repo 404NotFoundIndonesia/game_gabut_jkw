@@ -136,132 +136,132 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ## Phase 1 — Bot Management
 
 ### T-01-01 · Bot domain entity
-- [ ] `internal/bot/domain/bot.go`: `Bot` struct with all fields from PRD §7
-- [ ] Value object `BotToken` — wraps encrypted string; never exposes raw token in JSON
-- [ ] Domain method `Bot.Deactivate()` sets `active = false`, updates `updated_at`
-- [ ] Domain method `Bot.Activate()` sets `active = true`, updates `updated_at`
-- [ ] Domain method `Bot.RotateToken(newToken BotToken)` replaces token, updates `updated_at`
+- [x] `internal/bot/domain/bot.go`: `Bot` struct with all fields from PRD §7
+- [x] Value object `BotToken` — wraps encrypted string; never exposes raw token in JSON
+- [x] Domain method `Bot.Deactivate()` sets `active = false`, updates `updated_at`
+- [x] Domain method `Bot.Activate()` sets `active = true`, updates `updated_at`
+- [x] Domain method `Bot.RotateToken(newToken BotToken)` replaces token, updates `updated_at`
 - **DoD:** All fields exported; `BotToken` MarshalJSON returns `"[REDACTED]"` always
 - **Tests [unit]:** `Deactivate()` sets active=false; `MarshalJSON` on BotToken returns redacted string
 
 ---
 
 ### T-01-02 · Bot token encryption
-- [ ] `pkg/crypto` package: AES-256-GCM encrypt/decrypt using `BOT_TOKEN_ENCRYPTION_KEY`
-- [ ] `Encrypt(plaintext string) (ciphertext string, err error)`
-- [ ] `Decrypt(ciphertext string) (plaintext string, err error)`
-- [ ] Ciphertext base64url-encoded for safe DB storage
+- [x] `pkg/crypto` package: AES-256-GCM encrypt/decrypt using `BOT_TOKEN_ENCRYPTION_KEY`
+- [x] `Encrypt(plaintext string) (ciphertext string, err error)`
+- [x] `Decrypt(ciphertext string) (plaintext string, err error)`
+- [x] Ciphertext base64url-encoded for safe DB storage
 - **DoD:** Decrypt(Encrypt(x)) == x; wrong key → error; ciphertext never equals plaintext
 - **Tests [unit]:** Round-trip; wrong key; empty string; long token
 
 ---
 
 ### T-01-03 · Bot repository interface & DB migration
-- [ ] `internal/bot/domain/repository.go`: `BotRepository` interface
+- [x] `internal/bot/domain/repository.go`: `BotRepository` interface
   - `Save(ctx, bot) error`
   - `FindByID(ctx, id uuid.UUID) (*Bot, error)`
   - `FindByTelegramID(ctx, telegramID int64) (*Bot, error)`
   - `FindAll(ctx, filter BotFilter) ([]*Bot, int, error)`
   - `Delete(ctx, id uuid.UUID) error`
-- [ ] Migration `000001_create_bots.up.sql`: table `bots` with columns matching `Bot` domain entity; `token` column stores encrypted ciphertext; index on `telegram_id`
+- [x] Migration `000001_create_bots.up.sql`: table `bots` with columns matching `Bot` domain entity; `token` column stores encrypted ciphertext; index on `telegram_id`
 - **DoD:** Migration runs clean up/down; interface covers all use-case needs
 
 ---
 
 ### T-01-04 · Bot PostgreSQL repository
-- [ ] `internal/bot/infrastructure/postgres_bot_repository.go` implements `BotRepository`
-- [ ] `Save` upserts (insert or update on `id`)
-- [ ] `FindAll` supports filter by `active bool` + pagination (`LIMIT/OFFSET`)
-- [ ] All queries use `pgx` named args; no string-formatted SQL
+- [x] `internal/bot/infrastructure/postgres_bot_repository.go` implements `BotRepository`
+- [x] `Save` upserts (insert or update on `id`)
+- [x] `FindAll` supports filter by `active bool` + pagination (`LIMIT/OFFSET`)
+- [x] All queries use `pgx` named args; no string-formatted SQL
 - **DoD:** All interface methods implemented; returns `NotFound` AppError when row absent
 - **Tests [int]:** CRUD lifecycle against real test DB; `FindAll` with active filter; pagination counts
 
 ---
 
 ### T-01-05 · Bot use cases
-- [ ] `internal/bot/application/bot_service.go`
-- [ ] `RegisterBot(ctx, name, rawToken string) (*Bot, error)` — encrypt token, derive `telegram_id` by calling Telegram `getMe` API, persist
-- [ ] `ListBots(ctx, filter, pagination) ([]*Bot, int, error)`
-- [ ] `GetBot(ctx, id) (*Bot, error)`
-- [ ] `UpdateBot(ctx, id, patch UpdateBotPatch) (*Bot, error)` — partial update: name, active, token rotation
-- [ ] `DeleteBot(ctx, id) (*Bot, error)` — deactivate + delete; force-end any active sessions (via session service interface)
+- [x] `internal/bot/application/bot_service.go`
+- [x] `RegisterBot(ctx, name, rawToken string) (*Bot, error)` — encrypt token, derive `telegram_id` by calling Telegram `getMe` API, persist
+- [x] `ListBots(ctx, filter, pagination) ([]*Bot, int, error)`
+- [x] `GetBot(ctx, id) (*Bot, error)`
+- [x] `UpdateBot(ctx, id, patch UpdateBotPatch) (*Bot, error)` — partial update: name, active, token rotation
+- [x] `DeleteBot(ctx, id) (*Bot, error)` — deactivate + delete; force-end any active sessions (via session service interface)
 - **DoD:** Each use case covers happy path + not-found + validation errors
 - **Tests [unit]:** Mock `BotRepository`; test each use case: register with dup telegram_id → Conflict; update non-existent → NotFound; delete → deactivated
 
 ---
 
 ### T-01-06 · Bot HTTP handlers
-- [ ] `internal/bot/interface/http/bot_handler.go`
-- [ ] Wire all 5 bot endpoints per `openapi.yaml`:
+- [x] `internal/bot/interface/http/bot_handler.go`
+- [x] Wire all 5 bot endpoints per `openapi.yaml`:
   - `POST /api/v1/bots` → `createBot`
   - `GET /api/v1/bots` → `listBots` (query params: limit, offset, active)
   - `GET /api/v1/bots/:bot_id` → `getBot`
   - `PATCH /api/v1/bots/:bot_id` → `updateBot`
   - `DELETE /api/v1/bots/:bot_id` → `deleteBot`
-- [ ] All endpoints require `AdminApiKey` auth (middleware applied at router level)
-- [ ] Responses match `openapi.yaml` envelope exactly; HTTP status codes per spec
+- [x] All endpoints require `AdminApiKey` auth (middleware applied at router level)
+- [x] Responses match `openapi.yaml` envelope exactly; HTTP status codes per spec
 - **DoD:** All 5 endpoints return correct shapes; 401 when no/invalid key; 404 for missing bot
 - **Tests [int]:** Each endpoint: happy path, missing auth → 401, missing resource → 404, bad body → 400
 
 ---
 
 ### T-01-07 · Admin auth middleware
-- [ ] `internal/middleware/auth.go`
-- [ ] `AdminAuth` middleware: reads `Authorization: Bearer <token>` header; compares constant-time to `ADMIN_API_KEY`; returns 401 envelope if mismatch
-- [ ] `BotAuth` middleware: reads `X-Bot-Token` header; looks up bot by token in DB; injects `*Bot` into request context; returns 401 if invalid
+- [x] `internal/middleware/auth.go`
+- [x] `AdminAuth` middleware: reads `Authorization: Bearer <token>` header; compares constant-time to `ADMIN_API_KEY`; returns 401 envelope if mismatch
+- [x] `BotAuth` middleware: reads `X-Bot-Token` header; looks up bot by token in DB; injects `*Bot` into request context; returns 401 if invalid
 - **DoD:** Wrong key → 401; missing header → 401; valid key → handler called
 - **Tests [unit]:** Mock next handler; test both middlewares for valid/invalid/missing token
 
 ---
 
 ### T-01-08 · Game catalog domain & seeding
-- [ ] `internal/game/domain/game.go`: `Game` struct per PRD §7
-- [ ] `GameSlug` type with constants: `SlugUno`, `SlugSambungKata`, `SlugTruthOrDate`
-- [ ] `internal/game/domain/repository.go`: `GameRepository` interface
+- [x] `internal/game/domain/game.go`: `Game` struct per PRD §7
+- [x] `GameSlug` type with constants: `SlugUno`, `SlugSambungKata`, `SlugTruthOrDate`
+- [x] `internal/game/domain/repository.go`: `GameRepository` interface
   - `FindAll(ctx) ([]*Game, error)`
   - `FindByID(ctx, id) (*Game, error)`
   - `FindBySlug(ctx, slug GameSlug) (*Game, error)`
-- [ ] Migration `000002_create_games.up.sql`: table `games`; seed 3 rows (uno, sambung_kata, truth_or_date) with UUIDs, min/max players
+- [x] Migration `000002_create_games.up.sql`: table `games`; seed 3 rows (uno, sambung_kata, truth_or_date) with UUIDs, min/max players
 - **DoD:** Migration seeds exactly 3 games; UUIDs stable across re-runs (hardcoded in migration)
 
 ---
 
 ### T-01-09 · Game PostgreSQL repository & HTTP handlers
-- [ ] `internal/game/infrastructure/postgres_game_repository.go` implements `GameRepository`
-- [ ] `internal/game/interface/http/game_handler.go`
-- [ ] Wire 2 endpoints per `openapi.yaml`:
+- [x] `internal/game/infrastructure/postgres_game_repository.go` implements `GameRepository`
+- [x] `internal/game/interface/http/game_handler.go`
+- [x] Wire 2 endpoints per `openapi.yaml`:
   - `GET /api/v1/games` → `listGames`
   - `GET /api/v1/games/:game_id` → `getGame`
-- [ ] Both endpoints accessible by `AdminApiKey` OR `BotApiKey`
+- [x] Both endpoints accessible by `AdminApiKey` OR `BotApiKey`
 - **DoD:** List returns all 3 seeded games; get returns single game; 404 for unknown ID
 - **Tests [int]:** List → 3 results; get by valid ID → 200; get by unknown ID → 404
 
 ---
 
 ### T-01-10 · Bot-Game assignment domain & migration
-- [ ] `internal/game/domain/bot_game.go`: `BotGame` struct per PRD §7
-- [ ] `BotGameRepository` interface:
+- [x] `internal/game/domain/bot_game.go`: `BotGame` struct per PRD §7
+- [x] `BotGameRepository` interface:
   - `Assign(ctx, botID, gameID uuid.UUID) error` — upsert (idempotent)
   - `Remove(ctx, botID, gameID uuid.UUID) error`
   - `FindByBot(ctx, botID uuid.UUID) ([]*BotGame, error)`
   - `ExistsByBotAndGame(ctx, botID, gameID uuid.UUID) (bool, error)`
-- [ ] Migration `000003_create_bot_games.up.sql`: junction table `bot_games(bot_id, game_id, assigned_at)`; composite PK; FKs to `bots` and `games`
+- [x] Migration `000003_create_bot_games.up.sql`: junction table `bot_games(bot_id, game_id, assigned_at)`; composite PK; FKs to `bots` and `games`
 - **DoD:** Migration up/down clean; composite PK prevents duplicates at DB level
 
 ---
 
 ### T-01-11 · Bot-Game use cases & HTTP handlers
-- [ ] `internal/game/application/bot_game_service.go`
+- [x] `internal/game/application/bot_game_service.go`
   - `AssignGame(ctx, botID, gameID) (*BotGame, error)` — verify both exist; upsert
   - `RemoveGame(ctx, botID, gameID) error` — verify both exist; delete
   - `ListBotGames(ctx, botID) ([]*BotGame, error)`
-- [ ] `internal/game/interface/http/bot_game_handler.go`
-- [ ] Wire 3 endpoints per `openapi.yaml`:
+- [x] `internal/game/interface/http/bot_game_handler.go`
+- [x] Wire 3 endpoints per `openapi.yaml`:
   - `POST /api/v1/bots/:bot_id/games` → `assignGame`
   - `DELETE /api/v1/bots/:bot_id/games/:game_id` → `removeGame`
   - `GET /api/v1/bots/:bot_id/games` → `listBotGames`
-- [ ] `assignGame`: 404 if bot or game not found; 200 (not 201) if already assigned
-- [ ] `removeGame`: 204 on success; 404 if assignment not found
+- [x] `assignGame`: 404 if bot or game not found; 200 (not 201) if already assigned
+- [x] `removeGame`: 204 on success; 404 if assignment not found
 - **DoD:** Idempotent assign; correct status codes per spec; responses match `BotGame` schema
 - **Tests [unit]:** Mock repos; assign → upsert called; assign non-existent game → NotFound
 - **Tests [int]:** Assign, re-assign → 200 both times; remove → 204; list shows assigned games only
