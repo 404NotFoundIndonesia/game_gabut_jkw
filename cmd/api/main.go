@@ -21,8 +21,16 @@ import (
 	gameapp "github.com/404NFIDv2/bot-game-management/internal/game/application"
 	gameinfra "github.com/404NFIDv2/bot-game-management/internal/game/infrastructure"
 	gamehttp "github.com/404NFIDv2/bot-game-management/internal/game/interface/http"
+	"github.com/404NFIDv2/bot-game-management/internal/games"
+	sambungkata "github.com/404NFIDv2/bot-game-management/internal/games/sambung_kata"
+	"github.com/404NFIDv2/bot-game-management/internal/games/sambung_kata/kbbi"
+	truthordate "github.com/404NFIDv2/bot-game-management/internal/games/truth_or_date"
+	"github.com/404NFIDv2/bot-game-management/internal/games/uno"
 	healthhttp "github.com/404NFIDv2/bot-game-management/internal/health/interface/http"
 	"github.com/404NFIDv2/bot-game-management/internal/middleware"
+	sessionapp "github.com/404NFIDv2/bot-game-management/internal/session/application"
+	sessioninfra "github.com/404NFIDv2/bot-game-management/internal/session/infrastructure"
+	sessionhttp "github.com/404NFIDv2/bot-game-management/internal/session/interface/http"
 	"github.com/404NFIDv2/bot-game-management/internal/telegram"
 	"github.com/404NFIDv2/bot-game-management/pkg/logger"
 )
@@ -64,10 +72,38 @@ func main() {
 	botRepo := botinfra.NewPostgresBotRepository(pool)
 	gameRepo := gameinfra.NewPostgresGameRepository(pool)
 	botGameRepo := gameinfra.NewPostgresBotGameRepository(pool)
+	sessionRepo := sessioninfra.NewPostgresSessionRepository(pool)
+	sessionCache := sessioninfra.NewRedisSessionCache(redisClient)
+
+	// ── Game engine registry ──────────────────────────────────────────────────
+	var kbbiValidator kbbi.Validator
+	if cfg.KBBIMode == "api" {
+		kbbiValidator = kbbi.NewAPIValidator(cfg.KBBIAPIURL)
+	} else {
+		kbbiValidator = kbbi.NewOfflineValidator()
+	}
+
+	gameRegistry := games.NewRegistry()
+	gameRegistry.Register("uno", uno.New(nil))
+	gameRegistry.Register("sambung_kata", sambungkata.New(kbbiValidator))
+	gameRegistry.Register("truth_or_date", truthordate.New(nil))
 
 	// ── Services ──────────────────────────────────────────────────────────────
 	tgClient := telegram.NewHTTPClient()
-	botSvc := application.NewBotService(botRepo, tgClient, cfg.BotTokenEncryptionKey, application.NewNoopSessionEnder())
+
+	sessionSvc := sessionapp.NewSessionService(
+		botRepo,
+		gameRepo,
+		botGameRepo,
+		sessionRepo,
+		sessionCache,
+		gameRegistry,
+		sessionapp.NewNoopScoreCommitter(),
+		time.Duration(cfg.SessionTTLHours)*time.Hour,
+	)
+
+	// Wire real SessionEnder now that sessionSvc is available.
+	botSvc := application.NewBotService(botRepo, tgClient, cfg.BotTokenEncryptionKey, sessionSvc)
 	botGameSvc := gameapp.NewBotGameService(botRepo, gameRepo, botGameRepo)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
@@ -89,7 +125,6 @@ func main() {
 	healthhttp.NewHealthHandler(pool, redisPingerFn).RegisterRoutes(app)
 
 	// ── API routes ────────────────────────────────────────────────────────────
-	// tokenHasher derives SHA-256 hex from a raw bot token (for BotAuth lookup).
 	tokenHasher := func(raw string) string {
 		h := sha256.Sum256([]byte(raw))
 		return fmt.Sprintf("%x", h)
@@ -100,17 +135,16 @@ func main() {
 	bothttp.NewBotHandler(botSvc).RegisterRoutes(adminAPI)
 	gamehttp.NewBotGameHandler(botGameSvc).RegisterRoutes(adminAPI)
 
-	// Routes accessible by AdminApiKey OR BotApiKey (mounted separately so both middlewares apply).
+	// Routes accessible by AdminApiKey OR BotApiKey.
 	openAPI := app.Group("/api/v1")
 	openAPI.Use(func(c *fiber.Ctx) error {
-		// Accept either AdminApiKey (Authorization: Bearer) or BotApiKey (X-Bot-Token).
-		// Try admin first; fall through to bot auth if no Authorization header.
 		if c.Get("Authorization") != "" {
 			return middleware.AdminAuth(cfg.AdminAPIKey)(c)
 		}
 		return middleware.BotAuth(botRepo, tokenHasher)(c)
 	})
 	gamehttp.NewGameHandler(botGameSvc).RegisterRoutes(openAPI)
+	sessionhttp.NewSessionHandler(sessionSvc).RegisterRoutes(openAPI)
 
 	// ── Graceful shutdown ─────────────────────────────────────────────────────
 	addr := fmt.Sprintf(":%d", cfg.AppPort)

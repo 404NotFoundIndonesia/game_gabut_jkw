@@ -386,27 +386,27 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ## Phase 3 — Session API
 
 ### T-03-01 · Session domain entity & state machine
-- [ ] `internal/session/domain/session.go`: `GameSession` + `PlayerSession` structs per PRD §7
-- [ ] `SessionStatus` type + constants: `CREATED`, `WAITING`, `IN_PROGRESS`, `FINISHED`, `ARCHIVED`
-- [ ] State machine domain methods:
+- [x] `internal/session/domain/session.go`: `GameSession` + `PlayerSession` structs per PRD §7
+- [x] `SessionStatus` type + constants: `CREATED`, `WAITING`, `IN_PROGRESS`, `FINISHED`, `ARCHIVED`
+- [x] State machine domain methods:
   - `AddPlayer(player PlayerSession) error` — error if status not CREATED/WAITING or max players reached
   - `Start() error` — WAITING → IN_PROGRESS; error if wrong status or below min players
   - `Finish(scores map[int64]int) error` — IN_PROGRESS → FINISHED
   - `Archive() error` — FINISHED → ARCHIVED
-- [ ] `HostPlayerID()` — returns telegram_user_id of first player (host)
+- [x] `HostPlayerID()` — returns telegram_user_id of first player (host)
 - **DoD:** Invalid transitions return domain errors; state never mutated without method
 - **Tests [unit]:** Each transition: valid → succeeds; invalid (wrong status) → error; AddPlayer at max → error
 
 ---
 
 ### T-03-02 · Session repository interface & migrations
-- [ ] `internal/session/domain/repository.go`: `SessionRepository` interface
+- [x] `internal/session/domain/repository.go`: `SessionRepository` interface
   - `Save(ctx, session) error`
   - `FindByID(ctx, id) (*GameSession, error)`
   - `FindByBotID(ctx, botID, filter SessionFilter, pagination) ([]*GameSession, int, error)`
   - `FindActiveByChatID(ctx, botID, chatID int64) (*GameSession, error)`
   - `UpdateState(ctx, id, state json.RawMessage) error` — atomic state update
-- [ ] Migration `000004_create_sessions.up.sql`:
+- [x] Migration `000004_create_sessions.up.sql`:
   - Table `game_sessions`: all fields from `GameSession`; `state JSONB NOT NULL DEFAULT '{}'`
   - Table `player_sessions`: FK to `game_sessions`
   - Index on `(bot_id, status)`, `(bot_id, chat_id, status)` for active lookup
@@ -414,22 +414,22 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ---
 
 ### T-03-03 · Session PostgreSQL + Redis repository
-- [ ] `internal/session/infrastructure/postgres_session_repository.go` — source of truth
-- [ ] `internal/session/infrastructure/redis_session_cache.go` — hot cache for `IN_PROGRESS` session state
+- [x] `internal/session/infrastructure/postgres_session_repository.go` — source of truth
+- [x] `internal/session/infrastructure/redis_session_cache.go` — hot cache for `IN_PROGRESS` session state
   - Cache key: `session:state:{session_id}`
   - TTL: `SESSION_TTL_HOURS` from config
   - `GetState(ctx, id) (json.RawMessage, error)`
   - `SetState(ctx, id, state, ttl) error`
   - `InvalidateState(ctx, id) error`
-- [ ] Write path: update Redis + Postgres atomically (Redis first; Postgres on success)
-- [ ] Read path: Redis hit → return; miss → Postgres → repopulate Redis
+- [x] Write path: update Redis + Postgres atomically (Redis first; Postgres on success)
+- [x] Read path: Redis hit → return; miss → Postgres → repopulate Redis
 - **DoD:** State reads from Redis when warm; cold start reads from Postgres; TTL expires correctly
 - **Tests [int]:** Write state → Redis populated; expire Redis → next read hits Postgres and repopulates
 
 ---
 
 ### T-03-04 · Session use case — create
-- [ ] `internal/session/application/session_service.go`: `CreateSession`
+- [x] `internal/session/application/session_service.go`: `CreateSession`
   - Verify bot exists and is active
   - Verify game is assigned to bot
   - Verify no active session for same `chat_id` on this bot (→ Conflict)
@@ -441,7 +441,7 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ---
 
 ### T-03-05 · Session use case — join
-- [ ] `JoinSession(ctx, botID, sessionID, player JoinRequest) (*GameSession, error)`
+- [x] `JoinSession(ctx, botID, sessionID, player JoinRequest) (*GameSession, error)`
   - Session must be CREATED or WAITING
   - Re-join by same telegram_user_id → idempotent return
   - Max players check → Conflict
@@ -452,7 +452,7 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ---
 
 ### T-03-06 · Session use case — start
-- [ ] `StartSession(ctx, botID, sessionID, callerTelegramID int64) (*GameSession, error)`
+- [x] `StartSession(ctx, botID, sessionID, callerTelegramID int64) (*GameSession, error)`
   - Caller must be host player → Forbidden if not
   - Status must be WAITING → Conflict if not
   - Transition IN_PROGRESS; `started_at = now()`
@@ -462,21 +462,21 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ---
 
 ### T-03-07 · Session use case — submit move
-- [ ] `SubmitMove(ctx, botID, sessionID, move MoveRequest) (*MoveResult, error)`
+- [x] `SubmitMove(ctx, botID, sessionID, move MoveRequest) (*MoveResult, error)`
   - Status must be IN_PROGRESS → Unprocessable if not
   - Load state (Redis hot path)
   - Call `engine.Validate` → 422 on invalid move
   - Call `engine.Apply` → new state + events
   - Call `engine.Evaluate` → if finished, call `FinishSession` (commit scores)
   - Persist new state atomically
-- [ ] Returns `MoveResult{Session, Events}` per `openapi.yaml`
+- [x] Returns `MoveResult{Session, Events}` per `openapi.yaml`
 - **DoD:** Invalid move → 422; valid move → state updated; game over → session FINISHED + leaderboard updated
 - **Tests [unit]:** Mock engine + repos; valid move → Apply called; invalid move → Validate error surfaced; game over → Evaluate triggers finish path
 
 ---
 
 ### T-03-08 · Session use case — end
-- [ ] `EndSession(ctx, botID, sessionID, callerID int64, reason string) (*GameSession, error)`
+- [x] `EndSession(ctx, botID, sessionID, callerID int64, reason string) (*GameSession, error)`
   - Status CREATED/WAITING/IN_PROGRESS → proceed; FINISHED/ARCHIVED → Conflict
   - Caller must be host OR admin (admin flag injected via middleware context)
   - Partial scores committed to leaderboard
@@ -487,8 +487,8 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 ---
 
 ### T-03-09 · Session HTTP handlers
-- [ ] `internal/session/interface/http/session_handler.go`
-- [ ] Wire all 7 session endpoints per `openapi.yaml`:
+- [x] `internal/session/interface/http/session_handler.go`
+- [x] Wire all 7 session endpoints per `openapi.yaml`:
   - `POST /api/v1/bots/:bot_id/sessions` → `createSession` (`BotApiKey`)
   - `GET /api/v1/bots/:bot_id/sessions` → `listSessions` (`AdminApiKey` | `BotApiKey`)
   - `GET /api/v1/bots/:bot_id/sessions/:session_id` → `getSession` (`AdminApiKey` | `BotApiKey`)
@@ -496,7 +496,7 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
   - `POST /api/v1/bots/:bot_id/sessions/:session_id/start` → `startSession` (`BotApiKey`)
   - `POST /api/v1/bots/:bot_id/sessions/:session_id/move` → `submitMove` (`BotApiKey`)
   - `POST /api/v1/bots/:bot_id/sessions/:session_id/end` → `endSession` (`AdminApiKey` | `BotApiKey`)
-- [ ] `listSessions` supports query params: `status`, `game_id`, `limit`, `offset`
+- [x] `listSessions` supports query params: `status`, `game_id`, `limit`, `offset`
 - **DoD:** All 7 endpoints return correct shapes; status codes per spec
 - **Tests [int]:** Full happy-path flow: create → join → start → move → end; auth guards per endpoint
 
