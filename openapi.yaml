@@ -1,0 +1,1574 @@
+openapi: 3.1.1
+info:
+  title: Game Gabut JKW — Bot Game Management API
+  version: 1.0.0
+  description: |
+    Management API for Game Gabut JKW. Controls multiple Telegram child-bots,
+    assigns games per bot, manages game sessions, and tracks leaderboards.
+
+    **Authentication**
+    - Admin endpoints: `Authorization: Bearer <ADMIN_API_KEY>`
+    - Player/session endpoints: `X-Bot-Token: <bot_api_key>` (issued per registered bot)
+  contact:
+    name: M. Iqbal Effendi
+    email: iqbaleff214@gmail.com
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Development
+  - url: https://api.gamegabutjkw.id/api/v1
+    description: Production
+
+tags:
+  - name: Health
+    description: Liveness and readiness probes
+  - name: Bots
+    description: Bot registration and management (admin only)
+  - name: Games
+    description: Game catalog (read-only)
+  - name: Bot Games
+    description: Game assignment per bot (admin only)
+  - name: Sessions
+    description: Game session lifecycle
+  - name: Leaderboard
+    description: Per-bot and global leaderboards
+
+# ─────────────────────────────────────────────
+# Security schemes
+# ─────────────────────────────────────────────
+components:
+  securitySchemes:
+    AdminApiKey:
+      type: http
+      scheme: bearer
+      description: API key for admin/management bot operations (`ADMIN_API_KEY` env var)
+    BotApiKey:
+      type: apiKey
+      in: header
+      name: X-Bot-Token
+      description: Per-bot API key used by child-bot processes for session operations
+
+  # ─────────────────────────────────────────────
+  # Reusable parameters
+  # ─────────────────────────────────────────────
+  parameters:
+    BotId:
+      name: bot_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Internal UUID of the bot
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Session UUID
+    GameId:
+      name: game_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Game UUID
+    LimitParam:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 10
+      description: Max items to return
+    OffsetParam:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      description: Pagination offset
+
+  # ─────────────────────────────────────────────
+  # Reusable schemas
+  # ─────────────────────────────────────────────
+  schemas:
+
+    # ── Envelope ──────────────────────────────
+    SuccessEnvelope:
+      type: object
+      required: [success, data, error]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          description: Response payload (varies per endpoint)
+        error:
+          type: "null"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    ErrorEnvelope:
+      type: object
+      required: [success, data, error]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        data:
+          type: "null"
+        error:
+          $ref: "#/components/schemas/ApiError"
+        meta:
+          type: "null"
+
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code
+          examples:
+            - NOT_FOUND
+            - VALIDATION_ERROR
+            - UNAUTHORIZED
+            - CONFLICT
+            - INTERNAL_ERROR
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+    Meta:
+      type: object
+      properties:
+        total:
+          type: integer
+          description: Total records (for list responses)
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    # ── Bot ───────────────────────────────────
+    Bot:
+      type: object
+      required: [id, name, telegram_id, active, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        telegram_id:
+          type: integer
+          format: int64
+          description: Telegram bot user ID (from Telegram API)
+        active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateBotRequest:
+      type: object
+      required: [name, token]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Human-readable bot label
+        token:
+          type: string
+          minLength: 10
+          description: Telegram bot token (stored encrypted at rest, never returned)
+
+    UpdateBotRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        active:
+          type: boolean
+          description: Activate or deactivate the bot
+        token:
+          type: string
+          minLength: 10
+          description: Rotate bot token
+
+    BotList:
+      type: object
+      required: [bots]
+      properties:
+        bots:
+          type: array
+          items:
+            $ref: "#/components/schemas/Bot"
+
+    # ── Game ──────────────────────────────────
+    GameSlug:
+      type: string
+      enum: [uno, sambung_kata, truth_or_date]
+      description: |
+        - `uno` — Standard Uno card game
+        - `sambung_kata` — KBBI word-chaining game
+        - `truth_or_date` — Truth or Dare party game
+
+    Game:
+      type: object
+      required: [id, slug, name, description, min_players, max_players]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          $ref: "#/components/schemas/GameSlug"
+        name:
+          type: string
+        description:
+          type: string
+        min_players:
+          type: integer
+          minimum: 2
+        max_players:
+          type: integer
+          minimum: 2
+
+    GameList:
+      type: object
+      required: [games]
+      properties:
+        games:
+          type: array
+          items:
+            $ref: "#/components/schemas/Game"
+
+    # ── Bot-Game assignment ───────────────────
+    AssignGameRequest:
+      type: object
+      required: [game_id]
+      properties:
+        game_id:
+          type: string
+          format: uuid
+
+    BotGame:
+      type: object
+      required: [bot_id, game_id, game, assigned_at]
+      properties:
+        bot_id:
+          type: string
+          format: uuid
+        game_id:
+          type: string
+          format: uuid
+        game:
+          $ref: "#/components/schemas/Game"
+        assigned_at:
+          type: string
+          format: date-time
+
+    BotGameList:
+      type: object
+      required: [games]
+      properties:
+        games:
+          type: array
+          items:
+            $ref: "#/components/schemas/BotGame"
+
+    # ── Session ───────────────────────────────
+    SessionStatus:
+      type: string
+      enum: [CREATED, WAITING, IN_PROGRESS, FINISHED, ARCHIVED]
+      description: |
+        Lifecycle: CREATED → WAITING → IN_PROGRESS → FINISHED → ARCHIVED
+
+    PlayerSession:
+      type: object
+      required: [telegram_user_id, display_name, score, is_winner, joined_at]
+      properties:
+        telegram_user_id:
+          type: integer
+          format: int64
+        display_name:
+          type: string
+        score:
+          type: integer
+          minimum: 0
+        is_winner:
+          type: boolean
+        joined_at:
+          type: string
+          format: date-time
+
+    GameSession:
+      type: object
+      required: [id, bot_id, game_id, chat_id, status, players, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        bot_id:
+          type: string
+          format: uuid
+        game_id:
+          type: string
+          format: uuid
+        chat_id:
+          type: integer
+          format: int64
+          description: Telegram group chat ID where session runs
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        players:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerSession"
+        state:
+          type: object
+          description: |
+            Game-specific live state (JSONB). Shape varies per game:
+            - **uno**: draw pile, discard pile, hands, current turn, direction
+            - **sambung_kata**: last word, used words list, current turn
+            - **truth_or_date**: current question, round, responses
+          additionalProperties: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    CreateSessionRequest:
+      type: object
+      required: [game_id, chat_id, host_telegram_user_id, host_display_name]
+      properties:
+        game_id:
+          type: string
+          format: uuid
+          description: Must be a game assigned to this bot
+        chat_id:
+          type: integer
+          format: int64
+          description: Telegram group chat ID
+        host_telegram_user_id:
+          type: integer
+          format: int64
+        host_display_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        options:
+          type: object
+          description: Game-specific options (e.g. hand size for Uno)
+          additionalProperties: true
+
+    JoinSessionRequest:
+      type: object
+      required: [telegram_user_id, display_name]
+      properties:
+        telegram_user_id:
+          type: integer
+          format: int64
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    MoveRequest:
+      type: object
+      required: [telegram_user_id, move]
+      properties:
+        telegram_user_id:
+          type: integer
+          format: int64
+          description: Player submitting the move
+        move:
+          type: object
+          description: |
+            Game-specific move payload. Examples per game:
+
+            **Uno:**
+            ```json
+            { "action": "play_card", "card": { "color": "red", "value": "7" } }
+            { "action": "draw" }
+            { "action": "play_card", "card": { "color": "wild", "value": "wild" }, "chosen_color": "blue" }
+            ```
+
+            **Sambung Kata:**
+            ```json
+            { "word": "balon" }
+            ```
+
+            **Truth or Date:**
+            ```json
+            { "choice": "truth" }
+            { "choice": "date" }
+            { "action": "answer", "text": "My response..." }
+            { "action": "skip" }
+            ```
+          additionalProperties: true
+
+    MoveResult:
+      type: object
+      required: [session, events]
+      properties:
+        session:
+          $ref: "#/components/schemas/GameSession"
+        events:
+          type: array
+          description: Domain events produced by the move
+          items:
+            type: object
+            required: [type]
+            properties:
+              type:
+                type: string
+                description: Event type (e.g. CARD_PLAYED, PLAYER_ELIMINATED, GAME_OVER)
+              payload:
+                type: object
+                additionalProperties: true
+
+    SessionList:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/GameSession"
+
+    # ── Leaderboard ───────────────────────────
+    LeaderboardEntry:
+      type: object
+      required: [rank, telegram_user_id, display_name, total_score, games_played, wins, updated_at]
+      properties:
+        rank:
+          type: integer
+          minimum: 1
+        telegram_user_id:
+          type: integer
+          format: int64
+        display_name:
+          type: string
+        total_score:
+          type: integer
+          minimum: 0
+        games_played:
+          type: integer
+          minimum: 0
+        wins:
+          type: integer
+          minimum: 0
+        updated_at:
+          type: string
+          format: date-time
+
+    Leaderboard:
+      type: object
+      required: [entries]
+      properties:
+        bot_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null on global leaderboard
+        game_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null when across all games
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeaderboardEntry"
+
+    # ── Health ────────────────────────────────
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+
+    ReadinessStatus:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        checks:
+          type: object
+          required: [postgres, redis]
+          properties:
+            postgres:
+              type: string
+              enum: [ok, down]
+            redis:
+              type: string
+              enum: [ok, down]
+
+  # ─────────────────────────────────────────────
+  # Reusable responses
+  # ─────────────────────────────────────────────
+  responses:
+    400:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            success: false
+            data: null
+            error:
+              code: VALIDATION_ERROR
+              message: Request body is invalid
+              details:
+                - field: name
+                  message: must not be blank
+    401:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            success: false
+            data: null
+            error:
+              code: UNAUTHORIZED
+              message: Invalid or missing API key
+    403:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            success: false
+            data: null
+            error:
+              code: FORBIDDEN
+              message: You do not have permission to perform this action
+    404:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            success: false
+            data: null
+            error:
+              code: NOT_FOUND
+              message: Resource not found
+    409:
+      description: Conflict (duplicate resource or invalid state transition)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            success: false
+            data: null
+            error:
+              code: CONFLICT
+              message: Resource already exists or invalid state
+    422:
+      description: Business rule violation (e.g. invalid game move)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            success: false
+            data: null
+            error:
+              code: UNPROCESSABLE
+              message: Invalid move — not your turn
+    500:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            success: false
+            data: null
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred
+
+# ─────────────────────────────────────────────
+# Paths
+# ─────────────────────────────────────────────
+paths:
+
+  # ── Health ────────────────────────────────────
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Liveness probe
+      description: Returns 200 as long as the process is running.
+      responses:
+        "200":
+          description: Process alive
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/HealthStatus"
+              example:
+                success: true
+                data:
+                  status: ok
+                error: null
+
+  /ready:
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Readiness probe
+      description: Returns 200 only when PostgreSQL and Redis are reachable.
+      responses:
+        "200":
+          description: All dependencies healthy
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ReadinessStatus"
+              example:
+                success: true
+                data:
+                  status: ok
+                  checks:
+                    postgres: ok
+                    redis: ok
+                error: null
+        "503":
+          description: One or more dependencies unavailable
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ReadinessStatus"
+              example:
+                success: true
+                data:
+                  status: degraded
+                  checks:
+                    postgres: ok
+                    redis: down
+                error: null
+
+  # ── Bots ──────────────────────────────────────
+  /bots:
+    get:
+      tags: [Bots]
+      operationId: listBots
+      summary: List all registered bots
+      security:
+        - AdminApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+        - name: active
+          in: query
+          schema:
+            type: boolean
+          description: Filter by active status
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BotList"
+                      meta:
+                        $ref: "#/components/schemas/Meta"
+              example:
+                success: true
+                data:
+                  bots:
+                    - id: 018e7d3a-1234-7000-8000-abcdef012345
+                      name: GabBot Alpha
+                      telegram_id: 7123456789
+                      active: true
+                      created_at: "2026-05-19T00:00:00Z"
+                      updated_at: "2026-05-19T00:00:00Z"
+                error: null
+                meta:
+                  total: 1
+                  limit: 10
+                  offset: 0
+        "401":
+          $ref: "#/components/responses/401"
+        "500":
+          $ref: "#/components/responses/500"
+
+    post:
+      tags: [Bots]
+      operationId: createBot
+      summary: Register a new bot
+      security:
+        - AdminApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBotRequest"
+            example:
+              name: GabBot Alpha
+              token: "1234567890:AAF..."
+      responses:
+        "201":
+          description: Bot registered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Bot"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "409":
+          $ref: "#/components/responses/409"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /bots/{bot_id}:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+
+    get:
+      tags: [Bots]
+      operationId: getBot
+      summary: Get bot detail
+      security:
+        - AdminApiKey: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Bot"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+    patch:
+      tags: [Bots]
+      operationId: updateBot
+      summary: Update bot (name, active status, or rotate token)
+      security:
+        - AdminApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBotRequest"
+            examples:
+              deactivate:
+                summary: Deactivate bot
+                value:
+                  active: false
+              rename:
+                summary: Rename bot
+                value:
+                  name: GabBot Beta
+              rotate_token:
+                summary: Rotate bot token
+                value:
+                  token: "9876543210:BBG..."
+      responses:
+        "200":
+          description: Bot updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Bot"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+    delete:
+      tags: [Bots]
+      operationId: deleteBot
+      summary: Deactivate and unregister a bot
+      description: |
+        Sets `active = false` and removes the bot from the registry.
+        Existing sessions are force-finished before deletion.
+      security:
+        - AdminApiKey: []
+      responses:
+        "204":
+          description: Bot deleted
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  # ── Bot-Game assignment ────────────────────────
+  /bots/{bot_id}/games:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+
+    get:
+      tags: [Bot Games]
+      operationId: listBotGames
+      summary: List games assigned to a bot
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BotGameList"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+    post:
+      tags: [Bot Games]
+      operationId: assignGame
+      summary: Assign a game to a bot
+      description: Idempotent — assigning an already-assigned game returns 200 with no error.
+      security:
+        - AdminApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignGameRequest"
+            example:
+              game_id: 018e7d3b-0001-7000-8000-000000000001
+      responses:
+        "200":
+          description: Game assigned (or was already assigned)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BotGame"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /bots/{bot_id}/games/{game_id}:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+      - $ref: "#/components/parameters/GameId"
+
+    delete:
+      tags: [Bot Games]
+      operationId: removeGame
+      summary: Remove a game from a bot
+      security:
+        - AdminApiKey: []
+      responses:
+        "204":
+          description: Game removed
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  # ── Games catalog ──────────────────────────────
+  /games:
+    get:
+      tags: [Games]
+      operationId: listGames
+      summary: List all available games
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/GameList"
+              example:
+                success: true
+                data:
+                  games:
+                    - id: 018e7d3b-0001-7000-8000-000000000001
+                      slug: uno
+                      name: Uno
+                      description: Standard Uno card game, multi-player, turn-based.
+                      min_players: 2
+                      max_players: 10
+                    - id: 018e7d3b-0002-7000-8000-000000000002
+                      slug: sambung_kata
+                      name: Sambung Kata
+                      description: KBBI word-chaining game.
+                      min_players: 2
+                      max_players: 20
+                    - id: 018e7d3b-0003-7000-8000-000000000003
+                      slug: truth_or_date
+                      name: Truth or Date
+                      description: Truth or Dare party game.
+                      min_players: 2
+                      max_players: 20
+                error: null
+
+  /games/{game_id}:
+    parameters:
+      - $ref: "#/components/parameters/GameId"
+
+    get:
+      tags: [Games]
+      operationId: getGame
+      summary: Get game detail
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Game"
+        "404":
+          $ref: "#/components/responses/404"
+
+  # ── Sessions ───────────────────────────────────
+  /bots/{bot_id}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+
+    get:
+      tags: [Sessions]
+      operationId: listSessions
+      summary: List sessions for a bot
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/SessionStatus"
+          description: Filter by session status
+        - name: game_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by game
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SessionList"
+                      meta:
+                        $ref: "#/components/schemas/Meta"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+    post:
+      tags: [Sessions]
+      operationId: createSession
+      summary: Create a new game session
+      description: |
+        Creates a session in `CREATED` status. The host player is automatically added.
+        Game must be assigned to the bot.
+      security:
+        - BotApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+            examples:
+              uno_session:
+                summary: Create Uno session
+                value:
+                  game_id: 018e7d3b-0001-7000-8000-000000000001
+                  chat_id: -1001234567890
+                  host_telegram_user_id: 987654321
+                  host_display_name: Iqbal
+                  options:
+                    hand_size: 7
+              sambung_kata_session:
+                summary: Create Sambung Kata session
+                value:
+                  game_id: 018e7d3b-0002-7000-8000-000000000002
+                  chat_id: -1001234567890
+                  host_telegram_user_id: 987654321
+                  host_display_name: Iqbal
+                  options:
+                    timeout_seconds: 30
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/GameSession"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          description: Active session already exists for this chat
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /bots/{bot_id}/sessions/{session_id}:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+      - $ref: "#/components/parameters/SessionId"
+
+    get:
+      tags: [Sessions]
+      operationId: getSession
+      summary: Get session state
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/GameSession"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /bots/{bot_id}/sessions/{session_id}/join:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      tags: [Sessions]
+      operationId: joinSession
+      summary: Player joins a session
+      description: |
+        Allowed when session status is `CREATED` or `WAITING`.
+        Idempotent — re-joining by the same player is a no-op.
+        Transitions to `WAITING` once minimum players reached.
+      security:
+        - BotApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinSessionRequest"
+            example:
+              telegram_user_id: 111222333
+              display_name: Budi
+      responses:
+        "200":
+          description: Joined
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/GameSession"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          description: Session not joinable (wrong status or max players reached)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /bots/{bot_id}/sessions/{session_id}/start:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      tags: [Sessions]
+      operationId: startSession
+      summary: Host starts the session
+      description: |
+        Transitions session from `WAITING` → `IN_PROGRESS`.
+        Only the host player can call this.
+        Initializes game engine state.
+      security:
+        - BotApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telegram_user_id]
+              properties:
+                telegram_user_id:
+                  type: integer
+                  format: int64
+                  description: Must match the host player
+            example:
+              telegram_user_id: 987654321
+      responses:
+        "200":
+          description: Session started
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/GameSession"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "403":
+          description: Caller is not the host
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          description: Session not in WAITING status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /bots/{bot_id}/sessions/{session_id}/move:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      tags: [Sessions]
+      operationId: submitMove
+      summary: Submit a game move
+      description: |
+        Applies a player move to the active session.
+        Session must be `IN_PROGRESS`.
+        Returns updated session state and domain events.
+        If game ends, session transitions to `FINISHED` and leaderboard is updated atomically.
+      security:
+        - BotApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MoveRequest"
+            examples:
+              uno_play_card:
+                summary: Uno — play a red 7
+                value:
+                  telegram_user_id: 987654321
+                  move:
+                    action: play_card
+                    card:
+                      color: red
+                      value: "7"
+              uno_draw:
+                summary: Uno — draw a card
+                value:
+                  telegram_user_id: 987654321
+                  move:
+                    action: draw
+              sambung_kata_word:
+                summary: Sambung Kata — submit word
+                value:
+                  telegram_user_id: 987654321
+                  move:
+                    word: balon
+              truth_or_date_choice:
+                summary: Truth or Date — pick truth
+                value:
+                  telegram_user_id: 987654321
+                  move:
+                    choice: truth
+      responses:
+        "200":
+          description: Move applied
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/MoveResult"
+        "400":
+          $ref: "#/components/responses/400"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "422":
+          $ref: "#/components/responses/422"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /bots/{bot_id}/sessions/{session_id}/end:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      tags: [Sessions]
+      operationId: endSession
+      summary: Force-end a session
+      description: |
+        Host or admin can force-end any `CREATED`, `WAITING`, or `IN_PROGRESS` session.
+        Partial scores are committed to leaderboard.
+        Session transitions to `FINISHED`.
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [telegram_user_id]
+              properties:
+                telegram_user_id:
+                  type: integer
+                  format: int64
+                  description: Host player or admin user ID
+                reason:
+                  type: string
+                  maxLength: 200
+                  description: Optional reason for ending early
+            example:
+              telegram_user_id: 987654321
+              reason: Host ended the game early
+      responses:
+        "200":
+          description: Session ended
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/GameSession"
+        "401":
+          $ref: "#/components/responses/401"
+        "403":
+          $ref: "#/components/responses/403"
+        "404":
+          $ref: "#/components/responses/404"
+        "409":
+          description: Session already FINISHED or ARCHIVED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/500"
+
+  # ── Leaderboard ────────────────────────────────
+  /bots/{bot_id}/leaderboard:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+
+    get:
+      tags: [Leaderboard]
+      operationId: getBotLeaderboard
+      summary: Per-bot leaderboard (all games combined)
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Leaderboard"
+                      meta:
+                        $ref: "#/components/schemas/Meta"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /bots/{bot_id}/leaderboard/{game_id}:
+    parameters:
+      - $ref: "#/components/parameters/BotId"
+      - $ref: "#/components/parameters/GameId"
+
+    get:
+      tags: [Leaderboard]
+      operationId: getBotGameLeaderboard
+      summary: Per-bot per-game leaderboard
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Leaderboard"
+                      meta:
+                        $ref: "#/components/schemas/Meta"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /leaderboard:
+    get:
+      tags: [Leaderboard]
+      operationId: getGlobalLeaderboard
+      summary: Global leaderboard (all bots, all games)
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Leaderboard"
+                      meta:
+                        $ref: "#/components/schemas/Meta"
+        "401":
+          $ref: "#/components/responses/401"
+        "500":
+          $ref: "#/components/responses/500"
+
+  /leaderboard/{game_id}:
+    parameters:
+      - $ref: "#/components/parameters/GameId"
+
+    get:
+      tags: [Leaderboard]
+      operationId: getGlobalGameLeaderboard
+      summary: Global per-game leaderboard (all bots, one game)
+      security:
+        - AdminApiKey: []
+        - BotApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Leaderboard"
+                      meta:
+                        $ref: "#/components/schemas/Meta"
+        "401":
+          $ref: "#/components/responses/401"
+        "404":
+          $ref: "#/components/responses/404"
+        "500":
+          $ref: "#/components/responses/500"
