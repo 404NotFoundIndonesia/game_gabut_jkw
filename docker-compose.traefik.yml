@@ -47,7 +47,7 @@ services:
       - "traefik.http.routers.game-gabut-jkw.tls.certresolver=letsencrypt"
       - "traefik.http.routers.game-gabut-jkw.service=game-gabut-jkw-svc"
       - "traefik.http.routers.game-gabut-jkw.middlewares=security-headers@docker"
-      - "traefik.http.services.game-gabut-jkw-svc.loadbalancer.server.port=8001"
+      - "traefik.http.services.game-gabut-jkw-svc.loadbalancer.server.port=8080"
 
   postgres:
     image: postgres:16-alpine
@@ -86,6 +86,6 @@ volumes:
 
 networks:
   internal:
-    driver: bridge
+    internal: true
   traefik_public:
     external: true
