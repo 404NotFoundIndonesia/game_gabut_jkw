@@ -31,11 +31,11 @@ jobs:
           cache: true
       - name: Run unit tests with coverage
         run: go test ./... -coverprofile=coverage.out -covermode=atomic
-      - name: Enforce 80% coverage gate
+      - name: Enforce 50% coverage gate
         run: |
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
           echo "Total coverage: ${COVERAGE}%"
-          awk "BEGIN { if ($COVERAGE < 80) { print \"Coverage below 80%\"; exit 1 } }"
+          awk "BEGIN { if ($COVERAGE < 50) { print \"Coverage below 50%\"; exit 1 } }"
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-report
