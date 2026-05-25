@@ -31,7 +31,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -85,7 +85,7 @@ volumes:
   redis-data:
 
 networks:
-  internal:
-    internal: true
   traefik_public:
     external: true
+  internal:
+    internal: true
