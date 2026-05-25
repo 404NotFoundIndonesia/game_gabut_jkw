@@ -67,7 +67,7 @@ func TestChoice_Truth_DrawsQuestion(t *testing.T) {
 	var s struct {
 		CurrentQuestion string `json:"current_question"`
 	}
-	json.Unmarshal(newRaw, &s)
+	_ = json.Unmarshal(newRaw, &s)
 	if s.CurrentQuestion == "" {
 		t.Error("expected current_question to be set")
 	}
@@ -135,7 +135,7 @@ func TestAnswer_RecordsResponse(t *testing.T) {
 		} `json:"responses"`
 		CurrentTurnIdx int `json:"current_turn_idx"`
 	}
-	json.Unmarshal(newRaw, &s)
+	_ = json.Unmarshal(newRaw, &s)
 	if len(s.Responses) == 0 || s.Responses[0].Answer != "Tidak tahu" {
 		t.Errorf("expected response recorded, got %v", s.Responses)
 	}
@@ -199,7 +199,7 @@ func TestSkip_Host_Advances(t *testing.T) {
 	var s struct {
 		CurrentTurnIdx int `json:"current_turn_idx"`
 	}
-	json.Unmarshal(newRaw, &s)
+	_ = json.Unmarshal(newRaw, &s)
 	if s.CurrentTurnIdx != 1 {
 		t.Errorf("expected turn to advance to player 2, got idx %d", s.CurrentTurnIdx)
 	}
