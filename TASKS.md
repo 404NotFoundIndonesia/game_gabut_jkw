@@ -635,6 +635,196 @@ Legend: `[unit]` = unit tests required · `[int]` = integration test required ·
 
 ---
 
+## Phase 6 — Telegram Webhook Integration
+
+### T-06-01 · Config expansion
+- [ ] Add 5 new env vars to `internal/config/config.go`:
+  - `MAIN_BOT_TOKEN` (required)
+  - `TELEGRAM_ADMIN_IDS` (required; parse comma-separated string → `[]int64`)
+  - `WEBHOOK_BASE_URL` (required; strip trailing slash)
+  - `WEBHOOK_SECRET_TOKEN` (required)
+  - `CONV_STATE_TTL_MINUTES` (optional; default `10`)
+- [ ] Add vars to `.env.example` with placeholder values
+- [ ] Fail fast at boot if any required var is missing
+- **DoD:** Missing `MAIN_BOT_TOKEN` → process exits with clear error; `TELEGRAM_ADMIN_IDS=123,456` parsed to `[]int64{123, 456}`
+- **Tests [unit]:** Defaults applied; missing required → error; multi-value `TELEGRAM_ADMIN_IDS` parsed correctly
+
+---
+
+### T-06-02 · Telegram client expansion
+- [ ] `internal/telegram/client.go` — add methods to existing client:
+  - `SetWebhook(ctx, token, webhookURL, secretToken string) error`
+  - `DeleteWebhook(ctx, token string) error`
+  - `GetWebhookInfo(ctx, token string) (WebhookInfo, error)`
+  - `SendMessage(ctx, token string, chatID int64, text string) error`
+- [ ] All calls go to `https://api.telegram.org/bot<token>/<method>`
+- [ ] Respect 5-second timeout per call; return structured error on non-2xx
+- **DoD:** `SetWebhook` called with correct URL and secret; `DeleteWebhook` clears webhook; `SendMessage` delivers text reply
+- **Tests [unit]:** Mock HTTP transport; verify correct URL, payload, and token per call
+
+---
+
+### T-06-03 · Telegram Update types
+- [ ] `internal/telegram/update.go` — define structs for Telegram Bot API objects:
+  - `Update { UpdateID int64; Message *Message }`
+  - `Message { MessageID int64; From *User; Chat *Chat; Text string; Date int64 }`
+  - `User { ID int64; FirstName string; LastName string; Username string }`
+  - `Chat { ID int64; Type string }`
+  - `WebhookInfo { URL string; HasCustomCertificate bool; PendingUpdateCount int }`
+- [ ] All structs JSON-tagged to match Telegram Bot API field names (snake_case)
+- **DoD:** Unmarshalling a real Telegram update JSON into `Update` populates all fields correctly
+- **Tests [unit]:** Golden JSON → unmarshal → field assertions for each struct
+
+---
+
+### T-06-04 · Conversation FSM state + Redis store
+- [ ] `internal/webhook/conversation.go`
+  - `ConvState` type + constants: `ConvStateIdle`, `ConvStateAwaitToken`, `ConvStateAwaitName`, `ConvStateDone`
+  - `ConversationData { State ConvState; Token string; Name string }`
+- [ ] `internal/webhook/conversation_store.go`
+  - Interface: `ConversationStore`
+    - `Get(ctx, userID int64) (ConversationData, error)`
+    - `Set(ctx, userID int64, data ConversationData, ttl time.Duration) error`
+    - `Delete(ctx, userID int64) error`
+  - Redis implementation; key: `conv:main:<userID>`; value: JSON-encoded `ConversationData`
+  - TTL from `CONV_STATE_TTL_MINUTES` config
+- **DoD:** Get on missing key returns `ConvStateIdle`; Set with TTL expires after TTL; Delete clears immediately
+- **Tests [unit]:** Mock Redis; full FSM lifecycle: idle → await_token → await_name → done → deleted
+
+---
+
+### T-06-05 · Chat-to-session index (Redis)
+- [ ] `internal/webhook/chat_session_index.go`
+  - Interface: `ChatSessionIndex`
+    - `Set(ctx, botID uuid.UUID, chatID int64, sessionID uuid.UUID, ttl time.Duration) error`
+    - `Get(ctx, botID uuid.UUID, chatID int64) (uuid.UUID, error)` — returns `NotFound` if absent
+    - `Delete(ctx, botID uuid.UUID, chatID int64) error`
+  - Redis implementation; key: `chat_session:<botID>:<chatID>`; value: session UUID string
+  - TTL matches `SESSION_TTL_HOURS` converted to duration
+- [ ] `SessionService.CreateSession` calls `ChatSessionIndex.Set` after persisting session
+- [ ] `SessionService.EndSession` calls `ChatSessionIndex.Delete` after finishing session
+- **DoD:** After `CreateSession`, `Get(botID, chatID)` returns new session ID; after `EndSession`, `Get` returns NotFound
+- **Tests [unit]:** Mock Redis; set → get returns ID; delete → get returns NotFound
+
+---
+
+### T-06-06 · Webhook secret middleware
+- [ ] `internal/middleware/webhook_secret.go`
+  - `WebhookSecretMiddleware(secret string) fiber.Handler`
+  - Reads `X-Telegram-Bot-Api-Secret-Token` header
+  - Validates using `crypto/subtle.ConstantTimeCompare`
+  - Returns 401 envelope if missing or mismatch; calls `c.Next()` on success
+- [ ] Applied only to `/telegram/*` routes; NOT applied to `/api/v1/*` routes
+- **DoD:** Wrong secret → 401; missing header → 401; correct secret → handler called
+- **Tests [unit]:** Valid secret → next called; invalid → 401; missing → 401; timing-safe (no early exit on mismatch)
+
+---
+
+### T-06-07 · Main bot handler + admin commands + /addbot FSM
+- [ ] `internal/webhook/main_handler.go`
+  - `MainBotHandler` struct; depends on `BotService`, `GameService`, `ConversationStore`, `TelegramClient`, `[]int64` admin IDs
+  - `HandleUpdate(ctx, update telegram.Update) error` — dispatcher
+  - Admin ID check: if `update.Message.From.ID` not in admin IDs → send "unauthorized" reply; return
+  - Command dispatch:
+    - `/addbot` → FSM entry: set state `AWAIT_TOKEN`; reply "Send me the bot token"
+    - `/removebot <bot_id>` → call `BotService.DeleteBotWithWebhook`; reply confirmation
+    - `/reactivatebot <bot_id>` → call `BotService.ReactivateBotWithWebhook`; re-register webhook; reply confirmation
+    - `/listbots` → call `BotService.ListBots`; format tabular reply (ID, name, active status)
+    - `/listgames` → call `GameService.ListGames`; format reply with slug + name + min/max players
+    - `/listbotgames <bot_id>` → call `BotGameService.ListBotGames(botID)`; format reply with assigned game slugs
+    - `/assigngame <bot_id> <game_slug>` → call `BotGameService.AssignGame`; reply confirmation
+    - `/removegame <bot_id> <game_slug>` → call `BotGameService.RemoveGame`; reply confirmation
+    - `/leaderboard <bot_id>` → call `LeaderboardService.GetBotLeaderboard`; format ranked reply
+    - `/leaderboard global` or `/leaderboard` (no args) → call `LeaderboardService.GetGlobalLeaderboard`; format ranked reply
+  - FSM message handling (non-command text):
+    - `AWAIT_TOKEN`: validate token via `TelegramClient.GetMe`; on success store token in `ConvData`; advance to `AWAIT_NAME`; reply "Now send me a name for this bot"
+    - `AWAIT_NAME`: call `BotService.RegisterBotWithWebhook(token, name)`; set `DONE`; delete conv state; reply "Bot registered! ID: <id>"
+    - `IDLE` + unknown text → reply help message listing all commands
+- [ ] Register route: `POST /telegram/main/webhook` → `MainBotHandler.HandleUpdate`
+- [ ] Add `BotService.ReactivateBotWithWebhook(ctx, botID)` — sets `active=true` + calls `SetWebhook`; add to T-06-09
+- **DoD:** Full `/addbot` FSM completes: send token → validated → send name → bot registered with webhook set; `/listgames` reply includes all 3 game slugs; `/reactivatebot` re-registers webhook; admin check blocks non-admin users
+- **Tests [unit]:** Mock all deps; test each command path; FSM: valid token → advance state; invalid token → error reply; non-admin → rejected; `/listgames` → GameService called; `/listbotgames` → BotGameService called with correct ID; `/leaderboard` no args → global leaderboard; `/reactivatebot` → ReactivateBotWithWebhook called
+
+---
+
+### T-06-08 · Child bot handler + game command routing
+- [ ] `internal/webhook/child_handler.go`
+  - `ChildBotHandler` struct; depends on `BotService`, `SessionService`, `LeaderboardService`, `ChatSessionIndex`, `TelegramClient`
+  - `HandleUpdate(ctx, botID uuid.UUID, update telegram.Update) error` — dispatcher
+  - Command dispatch:
+    - `/newgame <game_slug>` → call `SessionService.CreateSession(botID, gameSlug, chatID, hostPlayer)`; reply with session ID and join instructions
+    - `/join` → look up active session via `ChatSessionIndex.Get(botID, chatID)`; call `SessionService.JoinSession`; reply confirmation
+    - `/start` → look up session; call `SessionService.StartSession(callerTelegramID)`; reply "Game started!"
+    - `/move <json_payload>` → look up session; parse payload; call `SessionService.SubmitMove`; format events reply
+    - `/end` → look up session; call `SessionService.EndSession`; reply scores summary
+    - `/leaderboard` → call `LeaderboardService.GetBotLeaderboard`; format reply
+    - Unknown command → reply "Available commands: /newgame, /join, /start, /move, /end, /leaderboard"
+  - No active session on `/join`/`/start`/`/move`/`/end` → reply "No active game in this chat. Use /newgame to start one."
+- [ ] Register route: `POST /telegram/child/:bot_id/webhook` → parse `bot_id` UUID → `ChildBotHandler.HandleUpdate`
+- [ ] Invalid `bot_id` UUID or unknown bot → return 200 (always ack Telegram) but log error
+- **DoD:** `/newgame uno` creates session and replies with ID; `/join` adds player; `/move` applies game move and replies with events; unknown command → help reply
+- **Tests [unit]:** Mock all deps; each command: success path + no-session path + invalid args path
+
+---
+
+### T-06-09 · BotService extensions — RegisterBotWithWebhook / DeleteBotWithWebhook
+- [ ] Add to `internal/bot/application/bot_service.go`:
+  - `RegisterBotWithWebhook(ctx, name, rawToken string) (*Bot, error)`
+    - Encrypt token; call `TelegramClient.GetMe` to validate and get `telegram_id`
+    - Persist bot
+    - Call `TelegramClient.SetWebhook(rawToken, WEBHOOK_BASE_URL+"/telegram/child/"+bot.ID.String(), WEBHOOK_SECRET_TOKEN)`
+    - On webhook failure → delete bot from DB; return error (atomicity)
+  - `DeleteBotWithWebhook(ctx, botID uuid.UUID) (*Bot, error)`
+    - Load bot; decrypt token
+    - Call `TelegramClient.DeleteWebhook(rawToken)`
+    - Deactivate bot in DB (don't hard-delete; keep history)
+  - `ReactivateBotWithWebhook(ctx, botID uuid.UUID) (*Bot, error)`
+    - Load bot; verify currently inactive (→ Conflict if already active)
+    - Set `active = true`; persist
+    - Decrypt token; call `TelegramClient.SetWebhook(rawToken, childWebhookURL, WEBHOOK_SECRET_TOKEN)`
+    - On webhook failure → revert `active = false`; return error
+- [ ] `NewBotService` gains `webhookBaseURL string`, `webhookSecret string`, `telegramClient TelegramClient` params
+- **DoD:** `RegisterBotWithWebhook` rolls back DB record if `SetWebhook` fails; `DeleteBotWithWebhook` always deactivates even if Telegram call fails (best-effort cleanup); `ReactivateBotWithWebhook` re-registers webhook and reverts on failure; webhook URL pattern is `<WEBHOOK_BASE_URL>/telegram/child/<bot_id>`
+- **Tests [unit]:** Mock `TelegramClient`; register → `SetWebhook` called with correct URL; webhook error → bot not in DB; delete → `DeleteWebhook` called; reactivate already-active bot → Conflict; reactivate → `SetWebhook` called; reactivate webhook failure → bot remains inactive
+
+---
+
+### T-06-10 · main.go wiring + startup webhook registration
+- [ ] `cmd/api/main.go` — wire new dependencies:
+  - Construct `telegram.NewClient(httpClient)`
+  - Parse `TELEGRAM_ADMIN_IDS` from config into `[]int64`
+  - Construct `ConversationStore` (Redis)
+  - Construct `ChatSessionIndex` (Redis)
+  - Construct `MainBotHandler`
+  - Construct `ChildBotHandler`
+  - Register `/telegram/main/webhook` and `/telegram/child/:bot_id/webhook` routes with `WebhookSecretMiddleware`
+- [ ] Startup sequence (before accepting requests):
+  1. Run DB migrations
+  2. Ping Redis
+  3. Call `TelegramClient.SetWebhook(MAIN_BOT_TOKEN, WEBHOOK_BASE_URL+"/telegram/main/webhook", WEBHOOK_SECRET_TOKEN)` — log result; non-fatal on failure (allow degraded start)
+  4. Start HTTP server
+- [ ] Add `MAIN_BOT_TOKEN`, `WEBHOOK_BASE_URL`, `WEBHOOK_SECRET_TOKEN`, `TELEGRAM_ADMIN_IDS`, `CONV_STATE_TTL_MINUTES` to `.env.example`
+- **DoD:** `docker compose up` starts API; main bot webhook registered; `POST /telegram/main/webhook` with correct secret → 200; wrong secret → 401
+- **Tests [int]:** Mock Telegram API server; startup calls `setWebhook`; webhook endpoint reachable with correct secret
+
+---
+
+### T-06-11 · Update dependency map (Phase 6 additions)
+- [ ] Document Phase 6 dependencies (no code change — this task is documentation only):
+  - `T-06-01` (config) → all T-06-* tasks
+  - `T-06-02` (Telegram client) → `T-06-07`, `T-06-08`, `T-06-09`
+  - `T-06-03` (Update types) → `T-06-07`, `T-06-08`
+  - `T-06-04` (FSM store) → `T-06-07`
+  - `T-06-05` (chat-session index) → `T-06-08`, `T-03-04`, `T-03-08` (CreateSession / EndSession call index)
+  - `T-06-06` (secret middleware) → `T-06-10`
+  - `T-06-07`, `T-06-08` (handlers) → `T-06-10`
+  - `T-06-09` (BotService extensions) → `T-06-07`
+  - `T-06-10` (main.go wiring) → Phase 6 complete
+  - Phase 5 (hardening) must be complete before Phase 6 is considered production-ready
+- **DoD:** This TASKS.md updated; all tasks above have clear DoD and test requirements
+
+---
+
 ## Dependency Map
 
 ```
@@ -653,4 +843,13 @@ T-03-02 → T-03-03 → T-03-04..T-03-08 (repo before use cases)
 T-03-07 → T-04-03 (submit move triggers score commit)
 T-04-01 → T-04-02 → T-04-03 → T-04-04 (leaderboard stack)
 Phase 5 → all Phase 0-4 complete
+T-06-01 → T-06-02..T-06-11 (config before all Phase 6 tasks)
+T-06-02 → T-06-07, T-06-08, T-06-09 (Telegram client before handlers)
+T-06-03 → T-06-07, T-06-08 (Update types before handlers)
+T-06-04 → T-06-07 (FSM store before main handler)
+T-06-05 → T-06-08 (chat-session index before child handler)
+T-06-06 → T-06-10 (secret middleware before wiring)
+T-06-07, T-06-08 → T-06-10 (handlers before main.go wiring)
+T-06-09 → T-06-07 (BotService extensions before main handler)
+Phase 5 → Phase 6 (hardening before Telegram integration is production-ready)
 ```

@@ -1,14 +1,14 @@
 # PRD: Game Gabut JKW — Bot Game Management API
 
-**Version:** 1.0.0
-**Date:** 2026-05-19
+**Version:** 2.0.0
+**Date:** 2026-05-26
 **Author:** M. Iqbal Effendi
 
 ---
 
 ## 1. Overview
 
-Game Gabut JKW is a backend API that acts as management center for multiple Telegram bots. One central "management bot" connects to this API; admins use it to assign games to registered child-bots. Telegram users who interact with any child-bot can then discover and play those assigned games, and accumulate scores tracked on per-bot leaderboards.
+Game Gabut JKW is a backend API that **directly handles Telegram webhook updates** from a main admin bot and multiple child game bots. The main bot is operated by the system admin and accepts management commands (`/addbot`, `/listbots`, `/assigngame`, etc.) to register and configure child bots. Child bots receive game commands (`/newgame`, `/join`, `/start`, `/move`) from Telegram users, who accumulate scores tracked on per-bot leaderboards. No external bot process is required — all Telegram interactions are handled inside this API.
 
 ### 1.1 Goals
 
@@ -18,13 +18,18 @@ Game Gabut JKW is a backend API that acts as management center for multiple Tele
 - Low-latency responses (<200 ms p99 for game state mutations).
 - Full observability: structured logs, metrics, health endpoints.
 - Dev/prod parity via Docker Compose.
+- Direct Telegram webhook handling — no external bot process needed.
+- Main admin bot with multi-step conversation FSM for bot registration and management.
+- Child bot webhooks registered automatically when a bot is added; deregistered on removal.
 
-### 1.2 Out of Scope (v1)
+### 1.2 Out of Scope (v2)
 
 - Web dashboard UI.
 - Payment or subscription logic.
 - Push notifications outside Telegram.
 - Multi-admin role hierarchy (single admin role).
+- Telegram inline mode or callback query keyboards.
+- Horizontal scaling of webhook handlers (single-instance assumed).
 
 ---
 
@@ -32,9 +37,10 @@ Game Gabut JKW is a backend API that acts as management center for multiple Tele
 
 | Role | Responsibility |
 |------|---------------|
-| Admin | Registers bots, assigns/removes games, views leaderboards |
+| Admin | Registers bots, assigns/removes games, views leaderboards via main bot commands |
 | Telegram User (Player) | Plays games through child-bots |
-| System (Management Bot) | Receives admin commands, relays to API |
+| System (Main Bot) | Receives admin commands directly; triggers BotService and Telegram API calls |
+| System (Child Bot) | Receives player game commands; routes to SessionService via webhook |
 
 ---
 
@@ -112,9 +118,29 @@ CREATED → WAITING → IN_PROGRESS → FINISHED → ARCHIVED
 
 ### 3.6 Admin Authentication
 
-- Management bot authenticates to API via API key (Bearer token in header).
+- REST admin endpoints authenticate via API key (Bearer token in `Authorization` header).
 - API key rotatable without downtime.
-- All admin endpoints require auth; player endpoints require only valid bot token context.
+- All REST admin endpoints require auth; player endpoints require only valid bot token context.
+- Telegram admin commands (main bot) are authorized by `TELEGRAM_ADMIN_IDS` — a comma-separated list of Telegram user IDs. Commands from any other user are silently ignored or rejected with an error message.
+
+### 3.7 Telegram Webhook Integration
+
+| ID | Requirement |
+|----|-------------|
+| TW-01 | API exposes `POST /telegram/main/webhook` to receive updates from the main admin bot. |
+| TW-02 | API exposes `POST /telegram/child/:bot_id/webhook` to receive updates from each child bot. |
+| TW-03 | Each webhook request is validated via `X-Telegram-Bot-Api-Secret-Token` header (constant-time compare). |
+| TW-04 | Main bot supports admin commands: `/addbot`, `/removebot`, `/reactivatebot`, `/listbots`, `/listgames`, `/listbotgames`, `/assigngame`, `/removegame`, `/leaderboard`, `/leaderboard global`. |
+| TW-05 | `/addbot` uses a multi-step conversation FSM (`IDLE → AWAIT_TOKEN → AWAIT_NAME → DONE`) stored in Redis with a configurable TTL. |
+| TW-06 | Child bot commands: `/newgame <game_slug>`, `/join`, `/start`, `/move <payload>`, `/end`, `/leaderboard`. |
+| TW-07 | Chat-to-session index stored in Redis (`chat_session:<bot_id>:<chat_id>`) routes child bot commands to the active session. |
+| TW-08 | When a child bot is registered via `/addbot`, the API calls Telegram `setWebhook` with the child's webhook URL automatically. |
+| TW-09 | When a child bot is deleted via `/removebot`, the API calls Telegram `deleteWebhook` automatically. |
+| TW-10 | On API startup, the main bot webhook is registered automatically via `setWebhook` using `WEBHOOK_BASE_URL`. |
+| TW-11 | `/listgames` returns all system-wide available game slugs and descriptions so the admin knows valid values for `/assigngame`. |
+| TW-12 | `/listbotgames <bot_id>` returns the games currently assigned to a specific bot. |
+| TW-13 | `/reactivatebot <bot_id>` reactivates a previously deactivated bot and re-registers its Telegram webhook. |
+| TW-14 | `/leaderboard global` (or `/leaderboard` with no args) returns the global leaderboard across all bots. |
 
 ---
 
@@ -163,10 +189,17 @@ bot-game-management/
 │   │   ├── application/
 │   │   ├── infrastructure/
 │   │   └── interface/
-│   └── games/                  # Game engine implementations
-│       ├── uno/
-│       ├── sambung_kata/
-│       └── truth_or_date/
+│   ├── games/                  # Game engine implementations
+│   │   ├── uno/
+│   │   ├── sambung_kata/
+│   │   └── truth_or_date/
+│   ├── webhook/                # Telegram webhook handlers (Phase 6)
+│   │   ├── main_handler.go     # main bot update handler + admin commands + FSM
+│   │   └── child_handler.go    # child bot update handler + game command routing
+│   ├── telegram/               # Telegram client & update types
+│   │   ├── client.go           # GetMe, SetWebhook, DeleteWebhook, SendMessage
+│   │   └── update.go           # Update, Message, User types
+│   └── middleware/             # HTTP middleware (auth, rate-limit, metrics)
 ├── pkg/                        # Shared, dependency-free utilities
 │   ├── logger/
 │   ├── validator/
@@ -197,18 +230,29 @@ bot-game-management/
 ### 5.3 Data Flow
 
 ```
-Telegram User
-    ↓ (command)
-Child Bot (Telegram)
-    ↓ (webhook / polling)
-[External bot process — out of scope]
-    ↓ (REST call with bot API key)
-Game Management API
-    ├── Game Session Service
+Admin (Telegram message)
+    ↓
+Main Bot (Telegram) ──→ POST /telegram/main/webhook
+    ↓
+Main Bot Handler (FSM + admin commands)
+    ├── BotService.RegisterBotWithWebhook → PostgreSQL
+    │   └── Telegram API: setWebhook(child bot)
+    ├── BotService.ListBots / DeleteBotWithWebhook
+    └── GameService.AssignGame / RemoveGame
+
+Telegram User (Telegram message)
+    ↓
+Child Bot (Telegram) ──→ POST /telegram/child/:bot_id/webhook
+    ↓
+Child Bot Handler (game command routing)
+    ├── Redis: chat_session:<bot_id>:<chat_id> → session lookup
+    ├── SessionService (newgame / join / start / move / end)
     │   ├── Game Engine (Uno / Sambung Kata / Truth or Date)
     │   └── Redis (session state cache)
-    ├── Leaderboard Service → PostgreSQL
-    └── Bot Service → PostgreSQL
+    └── LeaderboardService → PostgreSQL
+
+Startup
+    └── Telegram API: setWebhook(main bot, WEBHOOK_BASE_URL/telegram/main/webhook)
 ```
 
 ---
@@ -270,6 +314,15 @@ All endpoints return:
 | GET | `/health` | Liveness check |
 | GET | `/ready` | Readiness check (DB + Redis) |
 | GET | `/metrics` | Prometheus scrape endpoint |
+
+### 6.6 Telegram Webhook Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/telegram/main/webhook` | Receive updates from main admin bot |
+| POST | `/telegram/child/:bot_id/webhook` | Receive updates from a registered child game bot |
+
+No `Authorization` header — secured by `X-Telegram-Bot-Api-Secret-Token` header (constant-time validated against `WEBHOOK_SECRET_TOKEN`). Telegram delivers these automatically; external callers must not use these endpoints.
 
 ---
 
@@ -357,6 +410,19 @@ LeaderboardEntry {
   updated_at       timestamp
 }
 ```
+
+### ConversationState (Redis only)
+
+```
+ConversationState {
+  telegram_user_id  int64
+  state             enum    // IDLE | AWAIT_TOKEN | AWAIT_NAME | DONE
+  data              map     // partial data accumulated across FSM steps
+  expires_at        timestamp
+}
+```
+
+Redis key: `conv:main:<telegram_user_id>` · TTL: `CONV_STATE_TTL_MINUTES` (default 10 min).
 
 ---
 
@@ -472,6 +538,11 @@ All config via environment variables. No config files in code.
 | `KBBI_API_URL` | KBBI API base URL (if mode=api) | — |
 | `LOG_LEVEL` | `debug` / `info` / `warn` / `error` | `info` |
 | `SESSION_TTL_HOURS` | Hours before session archived | `168` (7d) |
+| `MAIN_BOT_TOKEN` | Telegram token for the main admin bot | — |
+| `TELEGRAM_ADMIN_IDS` | Comma-separated Telegram user IDs authorized for admin commands | — |
+| `WEBHOOK_BASE_URL` | Public base URL where Telegram delivers webhooks (e.g. `https://api.example.com`) | — |
+| `WEBHOOK_SECRET_TOKEN` | Secret for `X-Telegram-Bot-Api-Secret-Token` header validation | — |
+| `CONV_STATE_TTL_MINUTES` | Redis TTL for conversation FSM state | `10` |
 
 ---
 
@@ -485,6 +556,7 @@ All config via environment variables. No config files in code.
 | 3 | Session API | Session lifecycle, move submission, state persistence |
 | 4 | Leaderboard | Score aggregation, per-bot and global leaderboards |
 | 5 | Hardening | Rate limiting, metrics, health checks, prod Docker, E2E tests |
+| 6 | Telegram Webhook Integration | Main bot handler + admin commands + FSM, child bot handler + game commands, auto webhook registration, chat-session routing |
 
 ---
 
@@ -497,3 +569,7 @@ All config via environment variables. No config files in code.
 | Session concurrency (Redis race) | Lua scripts or Redis transactions for atomic state updates |
 | Bot token leakage | Encrypt tokens at rest; never log tokens |
 | Large leaderboard query latency | Redis sorted set for hot leaderboard; DB as source of truth |
+| Webhook secret mismatch | Generate `WEBHOOK_SECRET_TOKEN` once; stored in `.env`; same value used for all child bot `setWebhook` calls |
+| Telegram webhook replay / duplicate delivery | Track `message_id` per bot in Redis; idempotent session operations absorb duplicates |
+| FSM state corruption (partial `/addbot` flow) | Short `CONV_STATE_TTL_MINUTES` TTL cleans up stale state; explicit DONE/CANCEL transitions clear immediately |
+| Main bot token compromise | Token stored in `.env` only; never persisted to DB; rotate by updating env + restarting API |
