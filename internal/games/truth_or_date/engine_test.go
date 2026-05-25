@@ -213,7 +213,7 @@ func TestEvaluate_ScoreEqualsTurnsCompleted(t *testing.T) {
 
 	// Manually mark as finished and add 2 responses for player 1.
 	var s truthordate.State
-	json.Unmarshal(raw, &s)
+	_ = json.Unmarshal(raw, &s)
 	s.Status = "finished"
 	s.Responses = []truthordate.Response{
 		{PlayerID: 1, Choice: "truth", Answer: "yes"},

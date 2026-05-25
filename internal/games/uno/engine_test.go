@@ -73,7 +73,7 @@ func TestInit_HandSizeOption(t *testing.T) {
 	var s struct {
 		Hands map[string][]json.RawMessage `json:"hands"`
 	}
-	json.Unmarshal(raw, &s)
+	_ = json.Unmarshal(raw, &s)
 	for _, h := range s.Hands {
 		if len(h) != 5 {
 			t.Errorf("expected hand size 5, got %d", len(h))
@@ -92,7 +92,7 @@ func TestValidate_WrongPlayer(t *testing.T) {
 		PlayerOrder    []int64 `json:"player_order"`
 		CurrentTurnIdx int     `json:"current_turn_idx"`
 	}
-	json.Unmarshal(raw, &s)
+	_ = json.Unmarshal(raw, &s)
 	wrongPlayer := s.PlayerOrder[1-s.CurrentTurnIdx]
 
 	err := e.Validate(raw, games.Move{
@@ -112,7 +112,7 @@ func TestValidate_UnknownAction(t *testing.T) {
 		PlayerOrder    []int64 `json:"player_order"`
 		CurrentTurnIdx int     `json:"current_turn_idx"`
 	}
-	json.Unmarshal(raw, &s)
+	_ = json.Unmarshal(raw, &s)
 	current := s.PlayerOrder[s.CurrentTurnIdx]
 
 	err := e.Validate(raw, games.Move{
