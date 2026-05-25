@@ -78,7 +78,7 @@ func TestValidWord_Accepted(t *testing.T) {
 	var s struct {
 		LastWord string `json:"last_word"`
 	}
-	json.Unmarshal(newRaw, &s)
+	_ = json.Unmarshal(newRaw, &s)
 	if s.LastWord != "langit" {
 		t.Errorf("expected last_word 'langit', got %q", s.LastWord)
 	}
