@@ -293,7 +293,7 @@ func TestChildHandler_Join_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/telegram/child/"+bid.String()+"/webhook",
 		func() *bytes.Reader { b, _ := json.Marshal(makeChildUpdate(111, "Bob", "/join")); return bytes.NewReader(b) }())
 	req.Header.Set("Content-Type", "application/json")
-	app.Test(req, -1)
+	_, _ = app.Test(req, -1)
 
 	if !contains(tg.lastMessage, "joined") {
 		t.Errorf("expected joined reply, got %q", tg.lastMessage)
@@ -337,7 +337,7 @@ func TestChildHandler_Start_ServiceError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/telegram/child/"+bid.String()+"/webhook",
 		func() *bytes.Reader { b, _ := json.Marshal(makeChildUpdate(111, "Alice", "/start")); return bytes.NewReader(b) }())
 	req.Header.Set("Content-Type", "application/json")
-	app.Test(req, -1)
+	_, _ = app.Test(req, -1)
 
 	if !contains(tg.lastMessage, "❌") {
 		t.Errorf("expected error reply, got %q", tg.lastMessage)
@@ -386,7 +386,7 @@ func TestChildHandler_Move_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/telegram/child/"+bid.String()+"/webhook",
 		func() *bytes.Reader { b, _ := json.Marshal(makeChildUpdate(111, "Alice", "/move draw")); return bytes.NewReader(b) }())
 	req.Header.Set("Content-Type", "application/json")
-	app.Test(req, -1)
+	_, _ = app.Test(req, -1)
 
 	if !contains(tg.lastMessage, "card_played") {
 		t.Errorf("expected event in reply, got %q", tg.lastMessage)
@@ -417,7 +417,7 @@ func TestChildHandler_Move_GameOver(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/telegram/child/"+bid.String()+"/webhook",
 		func() *bytes.Reader { b, _ := json.Marshal(makeChildUpdate(111, "Alice", "/move draw")); return bytes.NewReader(b) }())
 	req.Header.Set("Content-Type", "application/json")
-	app.Test(req, -1)
+	_, _ = app.Test(req, -1)
 
 	if !contains(tg.lastMessage, "Game over") {
 		t.Errorf("expected game-over message, got %q", tg.lastMessage)
@@ -462,7 +462,7 @@ func TestChildHandler_End_Success(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/telegram/child/"+bid.String()+"/webhook",
 		func() *bytes.Reader { b, _ := json.Marshal(makeChildUpdate(111, "Alice", "/end")); return bytes.NewReader(b) }())
 	req.Header.Set("Content-Type", "application/json")
-	app.Test(req, -1)
+	_, _ = app.Test(req, -1)
 
 	if !contains(tg.lastMessage, "ended") {
 		t.Errorf("expected game-ended reply, got %q", tg.lastMessage)
@@ -568,7 +568,7 @@ func TestChildHandler_Move_JSONPayload(t *testing.T) {
 			return bytes.NewReader(b)
 		}())
 	req.Header.Set("Content-Type", "application/json")
-	app.Test(req, -1)
+	_, _ = app.Test(req, -1)
 
 	if !contains(tg.lastMessage, "Move applied") {
 		t.Errorf("expected move-applied reply, got %q", tg.lastMessage)
