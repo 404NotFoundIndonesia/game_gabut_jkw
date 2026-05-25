@@ -10,6 +10,7 @@ import (
 
 	"github.com/404NFIDv2/bot-game-management/internal/bot/application"
 	"github.com/404NFIDv2/bot-game-management/internal/bot/domain"
+	"github.com/404NFIDv2/bot-game-management/internal/telegram"
 	apperrors "github.com/404NFIDv2/bot-game-management/pkg/errors"
 )
 
@@ -97,12 +98,23 @@ func (f *fakeTGClient) GetBotID(_ context.Context, _ string) (int64, error) {
 	return f.botID, f.err
 }
 
+func (f *fakeTGClient) SetWebhook(_ context.Context, _, _, _ string) error { return f.err }
+func (f *fakeTGClient) DeleteWebhook(_ context.Context, _ string) error    { return f.err }
+func (f *fakeTGClient) SendMessage(_ context.Context, _ string, _ int64, _ string) error {
+	return f.err
+}
+func (f *fakeTGClient) GetWebhookInfo(_ context.Context, _ string) (telegram.WebhookInfo, error) {
+	return telegram.WebhookInfo{}, f.err
+}
+
 func newService(repo *fakeBotRepo, tgID int64, tgErr error) *application.BotService {
 	return application.NewBotService(
 		repo,
 		&fakeTGClient{botID: tgID, err: tgErr},
 		"32-byte-test-key-for-unit-tests!", // exactly 32 bytes
 		application.NewNoopSessionEnder(),
+		"https://api.example.com",
+		"test-webhook-secret",
 	)
 }
 
@@ -250,6 +262,158 @@ func TestListBots_Pagination(t *testing.T) {
 	}
 	if len(bots) != 2 {
 		t.Errorf("page size: got %d, want 2", len(bots))
+	}
+}
+
+// ── T-06-09: webhook-aware service methods ────────────────────────────────────
+
+type fakeTGClientWithWebhook struct {
+	botID      int64
+	botErr     error
+	webhookErr error
+	setWebhookCalled    int
+	deleteWebhookCalled int
+}
+
+func (f *fakeTGClientWithWebhook) GetBotID(_ context.Context, _ string) (int64, error) {
+	return f.botID, f.botErr
+}
+func (f *fakeTGClientWithWebhook) SetWebhook(_ context.Context, _, _, _ string) error {
+	f.setWebhookCalled++
+	return f.webhookErr
+}
+func (f *fakeTGClientWithWebhook) DeleteWebhook(_ context.Context, _ string) error {
+	f.deleteWebhookCalled++
+	return f.webhookErr
+}
+func (f *fakeTGClientWithWebhook) GetWebhookInfo(_ context.Context, _ string) (telegram.WebhookInfo, error) {
+	return telegram.WebhookInfo{}, f.botErr
+}
+func (f *fakeTGClientWithWebhook) SendMessage(_ context.Context, _ string, _ int64, _ string) error {
+	return nil
+}
+
+func newServiceWithWebhookClient(repo *fakeBotRepo, tgClient *fakeTGClientWithWebhook) *application.BotService {
+	return application.NewBotService(
+		repo,
+		tgClient,
+		"32-byte-test-key-for-unit-tests!",
+		application.NewNoopSessionEnder(),
+		"https://api.example.com",
+		"test-secret",
+	)
+}
+
+func TestRegisterBotWithWebhook_Success(t *testing.T) {
+	repo := newFakeRepo()
+	tgClient := &fakeTGClientWithWebhook{botID: 777}
+	svc := newServiceWithWebhookClient(repo, tgClient)
+
+	bot, err := svc.RegisterBotWithWebhook(context.Background(), "WebhookBot", "valid-token")
+	if err != nil {
+		t.Fatalf("RegisterBotWithWebhook: %v", err)
+	}
+	if bot.Name != "WebhookBot" {
+		t.Errorf("name: got %q", bot.Name)
+	}
+	if tgClient.setWebhookCalled != 1 {
+		t.Errorf("SetWebhook calls: got %d, want 1", tgClient.setWebhookCalled)
+	}
+}
+
+func TestRegisterBotWithWebhook_WebhookFailure_RollsBack(t *testing.T) {
+	repo := newFakeRepo()
+	tgClient := &fakeTGClientWithWebhook{botID: 888, webhookErr: errors.New("telegram error")}
+	svc := newServiceWithWebhookClient(repo, tgClient)
+
+	_, err := svc.RegisterBotWithWebhook(context.Background(), "Bot", "token")
+	if err == nil {
+		t.Fatal("expected error when SetWebhook fails")
+	}
+	// Bot must not exist in repo after rollback.
+	all, total, _ := svc.ListBots(context.Background(), domain.BotFilter{}, 100, 0)
+	if total != 0 || len(all) != 0 {
+		t.Errorf("bot should have been rolled back, found %d", total)
+	}
+}
+
+func TestDeleteBotWithWebhook_Success(t *testing.T) {
+	repo := newFakeRepo()
+	tgClient := &fakeTGClientWithWebhook{botID: 999}
+	svc := newServiceWithWebhookClient(repo, tgClient)
+
+	bot, _ := svc.RegisterBotWithWebhook(context.Background(), "B", "tok")
+
+	// Reset counter after registration.
+	tgClient.deleteWebhookCalled = 0
+	if err := svc.DeleteBotWithWebhook(context.Background(), bot.ID); err != nil {
+		t.Fatalf("DeleteBotWithWebhook: %v", err)
+	}
+	if tgClient.deleteWebhookCalled != 1 {
+		t.Errorf("DeleteWebhook calls: got %d, want 1", tgClient.deleteWebhookCalled)
+	}
+	_, err := svc.GetBot(context.Background(), bot.ID)
+	ae := toAppError(t, err)
+	if ae.Code != apperrors.CodeNotFound {
+		t.Errorf("expected bot deleted, got %s", ae.Code)
+	}
+}
+
+func TestReactivateBotWithWebhook_Success(t *testing.T) {
+	repo := newFakeRepo()
+	tgClient := &fakeTGClientWithWebhook{botID: 1001}
+	svc := newServiceWithWebhookClient(repo, tgClient)
+
+	bot, _ := svc.RegisterBotWithWebhook(context.Background(), "B", "tok")
+	// Manually deactivate via UpdateBot.
+	f := false
+	_, _ = svc.UpdateBot(context.Background(), bot.ID, application.UpdateBotPatch{Active: &f})
+
+	tgClient.setWebhookCalled = 0
+	reactivated, err := svc.ReactivateBotWithWebhook(context.Background(), bot.ID)
+	if err != nil {
+		t.Fatalf("ReactivateBotWithWebhook: %v", err)
+	}
+	if !reactivated.Active {
+		t.Error("bot should be active after reactivation")
+	}
+	if tgClient.setWebhookCalled != 1 {
+		t.Errorf("SetWebhook calls: got %d, want 1", tgClient.setWebhookCalled)
+	}
+}
+
+func TestReactivateBotWithWebhook_AlreadyActive_ReturnsConflict(t *testing.T) {
+	repo := newFakeRepo()
+	tgClient := &fakeTGClientWithWebhook{botID: 1002}
+	svc := newServiceWithWebhookClient(repo, tgClient)
+
+	bot, _ := svc.RegisterBotWithWebhook(context.Background(), "B", "tok")
+	_, err := svc.ReactivateBotWithWebhook(context.Background(), bot.ID)
+	ae := toAppError(t, err)
+	if ae.Code != apperrors.CodeConflict {
+		t.Errorf("expected CONFLICT for already-active bot, got %s", ae.Code)
+	}
+}
+
+func TestReactivateBotWithWebhook_WebhookFailure_RevertsActivation(t *testing.T) {
+	repo := newFakeRepo()
+	tgClient := &fakeTGClientWithWebhook{botID: 1003}
+	svc := newServiceWithWebhookClient(repo, tgClient)
+
+	bot, _ := svc.RegisterBotWithWebhook(context.Background(), "B", "tok")
+	f := false
+	_, _ = svc.UpdateBot(context.Background(), bot.ID, application.UpdateBotPatch{Active: &f})
+
+	// Now make SetWebhook fail.
+	tgClient.webhookErr = errors.New("telegram down")
+	_, err := svc.ReactivateBotWithWebhook(context.Background(), bot.ID)
+	if err == nil {
+		t.Fatal("expected error when SetWebhook fails during reactivation")
+	}
+	// Bot must remain inactive.
+	fetched, _ := svc.GetBot(context.Background(), bot.ID)
+	if fetched.Active {
+		t.Error("bot should remain inactive after failed reactivation")
 	}
 }
 

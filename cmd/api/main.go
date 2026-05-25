@@ -37,6 +37,7 @@ import (
 	sessioninfra "github.com/404NFIDv2/bot-game-management/internal/session/infrastructure"
 	sessionhttp "github.com/404NFIDv2/bot-game-management/internal/session/interface/http"
 	"github.com/404NFIDv2/bot-game-management/internal/telegram"
+	"github.com/404NFIDv2/bot-game-management/internal/webhook"
 	"github.com/404NFIDv2/bot-game-management/pkg/logger"
 	_ "github.com/404NFIDv2/bot-game-management/pkg/metrics" // register Prometheus metrics
 )
@@ -116,7 +117,7 @@ func main() {
 	)
 
 	// Wire real SessionEnder now that sessionSvc is available.
-	botSvc := application.NewBotService(botRepo, tgClient, cfg.BotTokenEncryptionKey, sessionSvc)
+	botSvc := application.NewBotService(botRepo, tgClient, cfg.BotTokenEncryptionKey, sessionSvc, cfg.WebhookBaseURL, cfg.WebhookSecretToken)
 	botGameSvc := gameapp.NewBotGameService(botRepo, gameRepo, botGameRepo)
 
 	// ── Session archival job ──────────────────────────────────────────────────
@@ -167,6 +168,35 @@ func main() {
 	gamehttp.NewGameHandler(botGameSvc).RegisterRoutes(openAPI)
 	sessionhttp.NewSessionHandler(sessionSvc).RegisterRoutes(openAPI)
 	lbhttp.NewLeaderboardHandler(lbSvc).RegisterRoutes(openAPI)
+
+	// ── Telegram webhook handlers ─────────────────────────────────────────────
+	convStore := webhook.NewRedisConversationStore(redisClient)
+	chatIndex := webhook.NewRedisChatSessionIndex(redisClient)
+	convTTL := time.Duration(cfg.ConvStateTTLMinutes) * time.Minute
+
+	// Empty-prefix group so middleware scopes only to the two webhook routes
+	// without adding an extra path segment on top of the full paths inside RegisterRoutes.
+	tgGroup := app.Group("", middleware.WebhookSecret(cfg.WebhookSecretToken))
+	webhook.NewMainBotHandler(
+		botSvc, botGameSvc, lbSvc,
+		convStore, tgClient,
+		cfg.MainBotToken,
+		cfg.TelegramAdminIDs,
+		convTTL,
+	).RegisterRoutes(tgGroup)
+	webhook.NewChildBotHandler(
+		botRepo, sessionSvc, botGameSvc, lbSvc,
+		chatIndex, tgClient,
+		time.Duration(cfg.SessionTTLHours)*time.Hour,
+	).RegisterRoutes(tgGroup)
+
+	// Register the main bot webhook on startup (best-effort; log failure, don't exit).
+	mainWebhookURL := cfg.WebhookBaseURL + "/telegram/main/webhook"
+	if err := tgClient.SetWebhook(ctx, cfg.MainBotToken, mainWebhookURL, cfg.WebhookSecretToken); err != nil {
+		log.Error("startup: failed to register main bot webhook", "url", mainWebhookURL, "err", err)
+	} else {
+		log.Info("startup: main bot webhook registered", "url", mainWebhookURL)
+	}
 
 	// ── Prometheus metrics endpoint (no auth) ─────────────────────────────────
 	// Served on a separate net/http mux so it never goes through Fiber middleware.

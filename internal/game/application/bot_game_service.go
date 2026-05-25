@@ -91,3 +91,8 @@ func (s *BotGameService) ListGames(ctx context.Context) ([]*gamedomain.Game, err
 func (s *BotGameService) GetGame(ctx context.Context, id uuid.UUID) (*gamedomain.Game, error) {
 	return s.gameRepo.FindByID(ctx, id)
 }
+
+// GetGameBySlug returns a game by its slug string identifier.
+func (s *BotGameService) GetGameBySlug(ctx context.Context, slug gamedomain.GameSlug) (*gamedomain.Game, error) {
+	return s.gameRepo.FindBySlug(ctx, slug)
+}

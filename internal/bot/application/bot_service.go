@@ -36,25 +36,32 @@ type UpdateBotPatch struct {
 
 // BotService implements all bot management use cases.
 type BotService struct {
-	repo         domain.BotRepository
-	tgClient     telegram.Client
-	cryptoKey    []byte
-	sessionEnder SessionEnder
+	repo           domain.BotRepository
+	tgClient       telegram.Client
+	cryptoKey      []byte
+	sessionEnder   SessionEnder
+	webhookBaseURL string
+	webhookSecret  string
 }
 
 // NewBotService constructs a BotService.
 // cryptoKeyStr is the BOT_TOKEN_ENCRYPTION_KEY config value.
+// webhookBaseURL and webhookSecret are used by the webhook-aware registration methods.
 func NewBotService(
 	repo domain.BotRepository,
 	tgClient telegram.Client,
 	cryptoKeyStr string,
 	sessionEnder SessionEnder,
+	webhookBaseURL string,
+	webhookSecret string,
 ) *BotService {
 	return &BotService{
-		repo:         repo,
-		tgClient:     tgClient,
-		cryptoKey:    crypto.PadKey(cryptoKeyStr),
-		sessionEnder: sessionEnder,
+		repo:           repo,
+		tgClient:       tgClient,
+		cryptoKey:      crypto.PadKey(cryptoKeyStr),
+		sessionEnder:   sessionEnder,
+		webhookBaseURL: webhookBaseURL,
+		webhookSecret:  webhookSecret,
 	}
 }
 
@@ -157,6 +164,79 @@ func (s *BotService) DeleteBot(ctx context.Context, id uuid.UUID) error {
 	}
 
 	return s.repo.Delete(ctx, id)
+}
+
+// RegisterBotWithWebhook encrypts the token, verifies it with Telegram, persists the bot,
+// and then calls Telegram setWebhook for the child bot's webhook URL.
+// If setWebhook fails the bot record is removed and the error is returned.
+func (s *BotService) RegisterBotWithWebhook(ctx context.Context, name, rawToken string) (*domain.Bot, error) {
+	bot, err := s.RegisterBot(ctx, name, rawToken)
+	if err != nil {
+		return nil, err
+	}
+
+	webhookURL := s.childWebhookURL(bot.ID.String())
+	if err := s.tgClient.SetWebhook(ctx, rawToken, webhookURL, s.webhookSecret); err != nil {
+		// Best-effort rollback: remove the bot record so the DB stays consistent.
+		_ = s.repo.Delete(ctx, bot.ID)
+		return nil, apperrors.Internal("failed to register Telegram webhook: " + err.Error())
+	}
+	return bot, nil
+}
+
+// DeleteBotWithWebhook calls Telegram deleteWebhook (best-effort), then deactivates the bot.
+// Deactivation always proceeds even if the Telegram call fails.
+func (s *BotService) DeleteBotWithWebhook(ctx context.Context, id uuid.UUID) error {
+	bot, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	rawToken, err := crypto.Decrypt(s.cryptoKey, bot.Token.Ciphertext())
+	if err == nil {
+		// Best-effort: ignore Telegram errors so deactivation always completes.
+		_ = s.tgClient.DeleteWebhook(ctx, rawToken)
+	}
+
+	if err := s.sessionEnder.ForceEndBotSessions(ctx, id); err != nil {
+		return apperrors.Internal("failed to end bot sessions").WithCause(err)
+	}
+	return s.repo.Delete(ctx, id)
+}
+
+// ReactivateBotWithWebhook sets the bot active and re-registers its Telegram webhook.
+// If setWebhook fails the bot is reverted to inactive.
+func (s *BotService) ReactivateBotWithWebhook(ctx context.Context, id uuid.UUID) (*domain.Bot, error) {
+	bot, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if bot.Active {
+		return nil, apperrors.Conflict("bot is already active")
+	}
+
+	bot.Activate()
+	if err := s.repo.Save(ctx, bot); err != nil {
+		return nil, err
+	}
+
+	rawToken, err := crypto.Decrypt(s.cryptoKey, bot.Token.Ciphertext())
+	if err != nil {
+		return nil, apperrors.Internal("failed to decrypt bot token").WithCause(err)
+	}
+
+	webhookURL := s.childWebhookURL(bot.ID.String())
+	if err := s.tgClient.SetWebhook(ctx, rawToken, webhookURL, s.webhookSecret); err != nil {
+		// Revert activation on webhook failure.
+		bot.Deactivate()
+		_ = s.repo.Save(ctx, bot)
+		return nil, apperrors.Internal("failed to re-register Telegram webhook: " + err.Error())
+	}
+	return bot, nil
+}
+
+func (s *BotService) childWebhookURL(botID string) string {
+	return s.webhookBaseURL + "/telegram/child/" + botID
 }
 
 // hashToken returns the SHA-256 hex digest of a raw bot token.
