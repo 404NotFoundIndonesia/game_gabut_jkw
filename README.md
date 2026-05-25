@@ -145,6 +145,509 @@ go run ./cmd/api
 
 ---
 
+## Telegram Setup
+
+This API is the game backend only — it has no webhook endpoint and never receives Telegram messages directly. To let Telegram users play games, you need a **child bot**: a separate program that receives Telegram messages and translates them into HTTP calls to this API.
+
+### How the two pieces connect
+
+```
+Telegram User
+     │ sends /newgame, /join, /play …
+     ▼
+Child Bot  (your code — any language)
+     │ HTTP  X-Bot-Token: <BOT_API_KEY>
+     ▼
+This API  (game_gabut_jkw)
+     │
+     ├── PostgreSQL  (game state, scores)
+     └── Redis       (session cache, rate limit)
+```
+
+The child bot is responsible for:
+- Receiving Telegram `Update` objects (via webhook or polling)
+- Translating commands into HTTP calls to this API
+- Sending API responses back to the Telegram chat
+
+---
+
+### Step 0 — Create a Telegram bot via BotFather
+
+1. Open Telegram and search for **@BotFather**
+2. Send `/newbot` and follow the prompts
+3. BotFather gives you a token like `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`
+4. Optionally set `/setcommands` in BotFather so users see a command menu
+
+Keep the token — you will register it in Step 2.
+
+---
+
+### Step 1 — Start this API
+
+```bash
+cp .env.example .env.local
+
+# Edit at minimum:
+#   ADMIN_API_KEY=your-secret-admin-key
+#   BOT_TOKEN_ENCRYPTION_KEY=exactly-32-characters-here!!
+
+docker compose up -d
+```
+
+Verify the API is healthy:
+
+```bash
+curl http://localhost:8080/health
+# {"success":true,"data":{"status":"ok"}}
+```
+
+---
+
+### Step 2 — Register the Telegram bot
+
+```bash
+curl -X POST http://localhost:8080/api/v1/bots \
+  -H "Authorization: Bearer <ADMIN_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "MyGameBot",
+    "token": "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+  }'
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "name": "MyGameBot",
+    "api_key": "the-bot-api-key-returned-once",
+    "active": true
+  }
+}
+```
+
+Save `data.id` as **`BOT_ID`** and `data.api_key` as **`BOT_API_KEY`**. The raw Telegram token is AES-256-GCM encrypted at rest and never returned again.
+
+---
+
+### Step 3 — Find the game IDs
+
+```bash
+curl http://localhost:8080/api/v1/games \
+  -H "Authorization: Bearer <ADMIN_API_KEY>"
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "data": [
+    {"id": "aaaa-0001-...", "slug": "uno",           "name": "Uno",           "min_players": 2, "max_players": 10},
+    {"id": "bbbb-0002-...", "slug": "sambung_kata",  "name": "Sambung Kata",  "min_players": 2, "max_players": 20},
+    {"id": "cccc-0003-...", "slug": "truth_or_date", "name": "Truth or Date", "min_players": 2, "max_players": 20}
+  ]
+}
+```
+
+Save the `id` of each game you want to use as **`GAME_ID`**.
+
+---
+
+### Step 4 — Assign a game to the bot
+
+```bash
+curl -X POST http://localhost:8080/api/v1/bots/<BOT_ID>/games \
+  -H "Authorization: Bearer <ADMIN_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"game_id": "<GAME_ID>"}'
+```
+
+Repeat for each game the bot should support. Assignment is idempotent — safe to call multiple times.
+
+---
+
+### Step 5 — Write the child bot
+
+Below is a minimal Python example using [`pyTelegramBotAPI`](https://github.com/eternnoir/pyTelegramBotAPI). Any language or Telegram library works — the only requirement is that every request to this API includes the header `X-Bot-Token: <BOT_API_KEY>`.
+
+```bash
+pip install pyTelegramBotAPI requests
+```
+
+```python
+import json, os
+import telebot, requests
+
+TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+API_BASE       = os.environ.get("API_BASE_URL", "http://localhost:8080")
+BOT_ID         = os.environ["BOT_ID"]       # UUID from Step 2
+BOT_API_KEY    = os.environ["BOT_API_KEY"]  # api_key from Step 2
+GAME_ID        = os.environ["GAME_ID"]      # UUID from Step 3
+
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+# Track active session per chat.  Use Redis or a DB in production.
+active_sessions: dict[int, str] = {}
+
+HEADERS = {"X-Bot-Token": BOT_API_KEY, "Content-Type": "application/json"}
+
+def api(method, path, **kwargs):
+    resp = requests.request(method, f"{API_BASE}/api/v1/{path}",
+                            headers=HEADERS, **kwargs)
+    return resp.json()
+
+# ── /newgame — host creates a session ────────────────────────────────────────
+
+@bot.message_handler(commands=["newgame"])
+def cmd_newgame(message):
+    result = api("POST", f"bots/{BOT_ID}/sessions", json={
+        "game_id": GAME_ID,
+        "chat_id": message.chat.id,
+        "player": {
+            "telegram_user_id": message.from_user.id,
+            "display_name":     message.from_user.first_name,
+        },
+    })
+    if not result.get("success"):
+        bot.reply_to(message, f"Error: {result['error']['message']}")
+        return
+    session = result["data"]
+    active_sessions[message.chat.id] = session["id"]
+    bot.reply_to(message,
+        f"Game created!\nSession ID: {session['id']}\n"
+        f"Others can /join now. Host sends /startgame when ready.")
+
+# ── /join — other players join ────────────────────────────────────────────────
+
+@bot.message_handler(commands=["join"])
+def cmd_join(message):
+    session_id = active_sessions.get(message.chat.id)
+    if not session_id:
+        bot.reply_to(message, "No active session in this chat. Use /newgame first.")
+        return
+    result = api("POST", f"bots/{BOT_ID}/sessions/{session_id}/join", json={
+        "telegram_user_id": message.from_user.id,
+        "display_name":     message.from_user.first_name,
+    })
+    if not result.get("success"):
+        bot.reply_to(message, f"Error: {result['error']['message']}")
+        return
+    players = [p["display_name"] for p in result["data"]["players"]]
+    bot.reply_to(message, f"Joined! Players so far: {', '.join(players)}")
+
+# ── /startgame — host starts the game ────────────────────────────────────────
+
+@bot.message_handler(commands=["startgame"])
+def cmd_startgame(message):
+    session_id = active_sessions.get(message.chat.id)
+    if not session_id:
+        bot.reply_to(message, "No active session.")
+        return
+    result = api("POST", f"bots/{BOT_ID}/sessions/{session_id}/start", json={
+        "telegram_user_id": message.from_user.id,
+    })
+    if not result.get("success"):
+        bot.reply_to(message, f"Error: {result['error']['message']}")
+        return
+    bot.reply_to(message, "Game started! Use /play to submit moves.")
+
+# ── /play — submit a move ─────────────────────────────────────────────────────
+# Usage: /play {"action":"play_card","card":"red_7"}   (Uno)
+#        /play {"word":"apel"}                          (Sambung Kata)
+#        /play {"choice":"truth"}                       (Truth or Date)
+
+@bot.message_handler(commands=["play"])
+def cmd_play(message):
+    session_id = active_sessions.get(message.chat.id)
+    if not session_id:
+        bot.reply_to(message, "No active session.")
+        return
+    try:
+        payload = json.loads(message.text.split(" ", 1)[1])
+    except Exception:
+        bot.reply_to(message, 'Usage: /play {"key": "value", ...}')
+        return
+    result = api("POST", f"bots/{BOT_ID}/sessions/{session_id}/move", json={
+        "player_id": message.from_user.id,
+        "payload":   payload,
+    })
+    if not result.get("success"):
+        bot.reply_to(message, f"Error: {result['error']['message']}")
+        return
+    data   = result["data"]
+    events = data.get("events", [])
+    session = data.get("session", {})
+    for event in events:
+        bot.send_message(message.chat.id, f"[{event['type']}] {event.get('payload', '')}")
+    if session.get("status") == "FINISHED":
+        active_sessions.pop(message.chat.id, None)
+        bot.send_message(message.chat.id, "Game over!")
+
+# ── /endgame — force end ──────────────────────────────────────────────────────
+
+@bot.message_handler(commands=["endgame"])
+def cmd_endgame(message):
+    session_id = active_sessions.get(message.chat.id)
+    if not session_id:
+        bot.reply_to(message, "No active session.")
+        return
+    result = api("POST", f"bots/{BOT_ID}/sessions/{session_id}/end", json={
+        "telegram_user_id": message.from_user.id,
+        "reason":           "host ended the game",
+    })
+    if not result.get("success"):
+        bot.reply_to(message, f"Error: {result['error']['message']}")
+        return
+    active_sessions.pop(message.chat.id, None)
+    bot.reply_to(message, "Game ended.")
+
+# ── /leaderboard — show top scores for this bot ───────────────────────────────
+
+@bot.message_handler(commands=["leaderboard"])
+def cmd_leaderboard(message):
+    result = api("GET", f"bots/{BOT_ID}/leaderboard")
+    if not result.get("success"):
+        bot.reply_to(message, "Could not fetch leaderboard.")
+        return
+    entries = result["data"].get("entries", [])
+    if not entries:
+        bot.reply_to(message, "No scores yet.")
+        return
+    lines = [f"{i+1}. {e['display_name']} — {e['total_score']} pts"
+             for i, e in enumerate(entries[:10])]
+    bot.reply_to(message, "Leaderboard:\n" + "\n".join(lines))
+
+bot.infinity_polling()
+```
+
+Run the child bot:
+
+```bash
+TELEGRAM_BOT_TOKEN=1234567890:ABCdef... \
+BOT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
+BOT_API_KEY=the-bot-api-key \
+GAME_ID=aaaa-0001-xxxx-xxxx-xxxxxxxxxxxx \
+python bot.py
+```
+
+---
+
+### Step 6 — Configure how Telegram delivers updates
+
+Telegram can deliver `Update` objects to your child bot in two ways. Choose one.
+
+#### Option A — Polling (simplest, best for local development)
+
+The child bot periodically asks Telegram "any new messages?". No public URL needed, no SSL.
+
+`bot.infinity_polling()` in the example above already uses this. Nothing extra to configure.
+
+To make sure no leftover webhook is set (which blocks polling), run:
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/deleteWebhook"
+```
+
+#### Option B — Webhook (recommended for production)
+
+Telegram pushes each `Update` as an HTTP POST to a URL you register. Requires:
+- A **publicly reachable HTTPS URL** (Telegram enforces SSL)
+- Your child bot running as an HTTP server
+
+##### Local development with ngrok
+
+[ngrok](https://ngrok.com) creates a temporary HTTPS tunnel to your local machine.
+
+```bash
+# 1. Install ngrok: https://ngrok.com/download
+
+# 2. Start your child bot in webhook mode (see code below) on port 5000
+python bot_webhook.py
+
+# 3. In another terminal, expose port 5000 publicly
+ngrok http 5000
+# ngrok prints a URL like: https://abc123.ngrok-free.app
+
+# 4. Register that URL with Telegram
+curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/setWebhook" \
+  -d "url=https://abc123.ngrok-free.app/webhook"
+
+# 5. Verify Telegram accepted the webhook
+curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/getWebhookInfo"
+```
+
+Webhook version of the child bot (`bot_webhook.py`):
+
+```python
+import json, os
+from flask import Flask, request as freq
+import telebot, requests
+
+TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+API_BASE       = os.environ.get("API_BASE_URL", "http://localhost:8080")
+BOT_ID         = os.environ["BOT_ID"]
+BOT_API_KEY    = os.environ["BOT_API_KEY"]
+GAME_ID        = os.environ["GAME_ID"]
+WEBHOOK_HOST   = os.environ["WEBHOOK_HOST"]  # e.g. https://abc123.ngrok-free.app
+
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+# ... (same handlers as the polling example above) ...
+
+# Remove polling, add Flask webhook server instead
+app = Flask(__name__)
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    update = telebot.types.Update.de_json(freq.data.decode("utf-8"))
+    bot.process_new_updates([update])
+    return "", 200
+
+if __name__ == "__main__":
+    bot.remove_webhook()
+    bot.set_webhook(url=f"{WEBHOOK_HOST}/webhook")
+    app.run(host="0.0.0.0", port=5000)
+```
+
+##### Production deployment
+
+In production your child bot needs a real domain with a valid TLS certificate (Let's Encrypt is free).
+
+```bash
+# Register your production webhook (do this once, or after each redeploy)
+curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/setWebhook" \
+  -d "url=https://bot.your-domain.com/webhook"
+
+# Verify
+curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/getWebhookInfo"
+# "url" should show your domain, "pending_update_count" should be 0
+
+# To switch back to polling (e.g. for debugging), remove the webhook first
+curl "https://api.telegram.org/bot<TELEGRAM_TOKEN>/deleteWebhook"
+```
+
+> **Note:** Polling and webhook cannot be active at the same time. If `getWebhookInfo` shows a URL set, polling calls will return an error. Always call `deleteWebhook` before switching to polling.
+
+---
+
+### Step 7 — Running multiple bots
+
+Register as many Telegram bots as you need. Each bot:
+- Has its own BotFather token
+- Gets its own `BOT_ID` + `BOT_API_KEY` from this API (Step 2)
+- Runs as a separate child bot process
+- Can have a different set of games assigned
+
+```
+BotFather token A → register → BOT_ID_A + BOT_API_KEY_A → assign Uno
+BotFather token B → register → BOT_ID_B + BOT_API_KEY_B → assign Sambung Kata + Truth or Date
+BotFather token C → register → BOT_ID_C + BOT_API_KEY_C → assign all three
+        │                   │                   │
+        └─────────── all call this same API ────┘
+                   (separate X-Bot-Token per bot)
+```
+
+Run each bot as a separate process, each with its own env vars:
+
+```bash
+# Bot A — Uno only
+TELEGRAM_BOT_TOKEN=<token-A> BOT_ID=<id-A> BOT_API_KEY=<key-A> GAME_ID=<uno-id> \
+  python bot.py &
+
+# Bot B — Sambung Kata
+TELEGRAM_BOT_TOKEN=<token-B> BOT_ID=<id-B> BOT_API_KEY=<key-B> GAME_ID=<sambung-id> \
+  python bot.py &
+```
+
+Or use Docker Compose to manage them together:
+
+```yaml
+# docker-compose.bots.yml
+services:
+  bot-uno:
+    image: python:3.12-slim
+    command: python bot.py
+    environment:
+      TELEGRAM_BOT_TOKEN: "${TOKEN_A}"
+      BOT_ID:             "${BOT_ID_A}"
+      BOT_API_KEY:        "${BOT_API_KEY_A}"
+      GAME_ID:            "${UNO_GAME_ID}"
+      API_BASE_URL:       "http://api:8080"
+
+  bot-sambung:
+    image: python:3.12-slim
+    command: python bot.py
+    environment:
+      TELEGRAM_BOT_TOKEN: "${TOKEN_B}"
+      BOT_ID:             "${BOT_ID_B}"
+      BOT_API_KEY:        "${BOT_API_KEY_B}"
+      GAME_ID:            "${SAMBUNG_GAME_ID}"
+      API_BASE_URL:       "http://api:8080"
+```
+
+---
+
+### Command → API mapping reference
+
+| User sends | Child bot calls | Auth |
+|------------|-----------------|------|
+| `/newgame` | `POST /api/v1/bots/<BOT_ID>/sessions` | `X-Bot-Token` |
+| `/join` | `POST /api/v1/bots/<BOT_ID>/sessions/<SESSION_ID>/join` | `X-Bot-Token` |
+| `/startgame` | `POST /api/v1/bots/<BOT_ID>/sessions/<SESSION_ID>/start` | `X-Bot-Token` |
+| `/play <json>` | `POST /api/v1/bots/<BOT_ID>/sessions/<SESSION_ID>/move` | `X-Bot-Token` |
+| `/endgame` | `POST /api/v1/bots/<BOT_ID>/sessions/<SESSION_ID>/end` | `X-Bot-Token` |
+| `/leaderboard` | `GET /api/v1/bots/<BOT_ID>/leaderboard` | `X-Bot-Token` |
+
+---
+
+### Move payload reference
+
+The `payload` field in `POST .../move` is game-specific.
+
+#### Uno
+
+| Action | Payload |
+|--------|---------|
+| Play a card | `{"action": "play_card", "card": "red_7"}` |
+| Draw a card | `{"action": "draw"}` |
+| Play Wild (choose color) | `{"action": "play_card", "card": "wild", "chosen_color": "blue"}` |
+| Play Wild Draw Four | `{"action": "play_card", "card": "wild_draw_four", "chosen_color": "green"}` |
+
+Card format: `<color>_<value>`. Colors: `red`, `green`, `blue`, `yellow`. Values: `0`–`9`, `skip`, `reverse`, `draw_two`.
+
+#### Sambung Kata
+
+| Action | Payload |
+|--------|---------|
+| Submit a word | `{"word": "apel"}` |
+
+The word must start with the last letter of the previous word and must exist in the KBBI dictionary.
+
+#### Truth or Date
+
+| Action | Payload |
+|--------|---------|
+| Choose truth | `{"choice": "truth"}` |
+| Choose dare | `{"choice": "dare"}` |
+| Submit answer | `{"answer": "my answer text"}` |
+| Skip question (host only) | `{"skip": true}` |
+
+---
+
+### Important notes
+
+- **Session tracking** — The child bot must store `chat_id → session_id` itself (in memory, Redis, or a DB). The API does not push session IDs to the bot.
+- **One session per chat** — Only one active session is allowed per `(bot_id, chat_id)`. A second `/newgame` in the same chat returns `409 Conflict` until the current session ends.
+- **Bot-only endpoints** — `create`, `join`, `start`, and `move` require `X-Bot-Token` and return `403` if called with an admin key.
+- **Rate limit** — 60 requests/min per bot token. The API returns `429` with a `Retry-After` header when exceeded.
+- **Multiple bots** — Register as many bots as you need. Each gets its own `BOT_ID` and `BOT_API_KEY`. Run a separate child bot process per Telegram bot.
+
+---
+
 ## Configuration
 
 All configuration is via environment variables. No config files.
