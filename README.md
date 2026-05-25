@@ -411,6 +411,106 @@ No additional processes to manage. All bots run through the same API instance.
 
 ---
 
+## Bot Commands Reference
+
+### Main Admin Bot
+
+Talk to this bot directly in Telegram. Only users in `TELEGRAM_ADMIN_IDS` can use it.
+
+#### Bot Management
+
+| Command | Description |
+|---------|-------------|
+| `/addbot` | Start multi-step flow to register a new child bot. Bot will prompt for token, then name. |
+| `/listbots` | List all registered bots with ID, name, and active/inactive status. |
+| `/removebot <bot_id>` | Deactivate bot and delete its Telegram webhook. The bot record is kept in the database. |
+| `/reactivatebot <bot_id>` | Re-activate an inactive bot and re-register its webhook with the current `WEBHOOK_BASE_URL`. |
+
+#### Game Assignment
+
+| Command | Description |
+|---------|-------------|
+| `/listgames` | List all available game slugs: `uno`, `sambung_kata`, `truth_or_date`. |
+| `/listbotgames <bot_id>` | List games currently assigned to a specific bot. |
+| `/assigngame <bot_id> <slug>` | Assign a game to a bot. Idempotent — safe to run multiple times. |
+| `/removegame <bot_id> <slug>` | Remove a game assignment from a bot. |
+
+#### Leaderboard
+
+| Command | Description |
+|---------|-------------|
+| `/leaderboard` | Global leaderboard — top 10 players across all bots and games. |
+| `/leaderboard global` | Same as above. |
+| `/leaderboard <bot_id>` | Per-bot leaderboard — top 10 players for a specific bot. |
+
+**Example `/addbot` flow:**
+
+```
+You:   /addbot
+Bot:   Send me the BotFather token for the new child bot:
+You:   9876543210:XYZdef-token
+Bot:   ✅ Token valid. Now send me a name for this bot:
+You:   Uno Game Bot
+Bot:   ✅ Bot registered!
+       Name: Uno Game Bot
+       ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+---
+
+### Child Game Bots (Uno, Sambung Kata, Truth or Date)
+
+Players use these commands in the Telegram chat where the child bot is active.
+
+#### Session Management
+
+| Command | Who can use | Description |
+|---------|-------------|-------------|
+| `/newgame <slug>` | Anyone | Create a new game. Slug: `uno`, `sambung_kata`, or `truth_or_date`. The sender becomes the host. |
+| `/join` | Anyone | Join the active game in this chat. Must be used before the host sends `/start`. |
+| `/start` | Host only | Start the game. Requires minimum players (Uno: 2, others: 2). |
+| `/end` | Anyone | Force-end the current game and show final scores. |
+| `/leaderboard` | Anyone | Show top 10 scores for this bot. |
+
+Unknown commands or text that isn't a command reply with the list above.
+
+#### `/move` — Submit a game move
+
+Format: `/move <JSON>` or shorthand `/move <action> <value>`
+
+##### Uno
+
+| Move | Command |
+|------|---------|
+| Play a card | `/move {"action":"play_card","card":"red_7"}` |
+| Draw a card | `/move draw` |
+| Play Wild (pick color) | `/move {"action":"play_card","card":"wild","chosen_color":"blue"}` |
+| Play Wild Draw Four | `/move {"action":"play_card","card":"wild_draw_four","chosen_color":"green"}` |
+
+Card format: `<color>_<value>`
+- Colors: `red` `green` `blue` `yellow`
+- Values: `0`–`9` `skip` `reverse` `draw_two`
+- Specials: `wild` `wild_draw_four`
+
+##### Sambung Kata
+
+| Move | Command |
+|------|---------|
+| Submit a word | `/move {"word":"apel"}` or `/move word apel` |
+
+Rules: word must start with the last letter of the previous word; must exist in KBBI.
+
+##### Truth or Date
+
+| Move | Command |
+|------|---------|
+| Choose truth | `/move {"choice":"truth"}` or `/move choice truth` |
+| Choose dare | `/move {"choice":"dare"}` or `/move choice dare` |
+| Submit answer | `/move {"answer":"my answer text"}` |
+| Skip (host only) | `/move {"skip":true}` |
+
+---
+
 ## Configuration
 
 All configuration is via environment variables. No config files.
