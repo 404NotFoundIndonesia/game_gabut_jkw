@@ -39,7 +39,6 @@ services:
     networks:
       - traefik_public
       - internal
-      - proxy
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik_public"
@@ -88,5 +87,5 @@ volumes:
 networks:
   internal:
     driver: bridge
-  proxy:
-    driver: bridge
+  traefik_public:
+    external: true
