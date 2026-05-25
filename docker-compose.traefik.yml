@@ -2,8 +2,8 @@
 #   cd traefik/ && docker compose up -d
 #
 # Setup:
-#   1. cp .env.example .env.production
-#   2. Edit .env.production
+#   1. cp .env.example .env
+#   2. Edit .env
 #   3. docker compose up -d
 #
 # The `traefik_public` network is owned by traefik/docker-compose.yml.
@@ -20,7 +20,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.prod
     env_file:
-      - .env.production
+      - .env
     environment:
       APP_ENV: production
       DB_DSN: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/bot_game_management?sslmode=disable
