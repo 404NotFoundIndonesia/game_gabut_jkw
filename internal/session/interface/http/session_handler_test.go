@@ -75,24 +75,6 @@ func newApp(svc sessionhttp.SessionService) *fiber.App {
 	return app
 }
 
-// newBotApp simulates a bot-authenticated request by setting a bot in context.
-func newBotApp(svc sessionhttp.SessionService) *fiber.App {
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ErrorHandler:          middleware.ErrorHandler,
-	})
-	api := app.Group("/api/v1")
-	// Inject a fake Bot into context so BotFromContext returns true.
-	api.Use(func(c *fiber.Ctx) error {
-		// No real bot lookup; we inject a non-nil *bot.domain.Bot via context.
-		// Since BotFromContext uses a private key, we can't inject directly in tests.
-		// Instead we call middleware.BotAuth with a stub that always returns the bot.
-		// Simplest approach: set X-Bot-Token and skip auth for test purposes.
-		return c.Next()
-	})
-	sessionhttp.NewSessionHandler(svc).RegisterRoutes(api)
-	return app
-}
 
 func doReq(t *testing.T, app *fiber.App, method, path string, body any, auth string) (int, map[string]any) {
 	t.Helper()

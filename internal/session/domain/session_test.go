@@ -59,8 +59,8 @@ func TestAddPlayer_AtInProgress_ReturnsConflict(t *testing.T) {
 func TestAddPlayer_Idempotent(t *testing.T) {
 	s := newSession()
 	p := player(42)
-	s.AddPlayer(p)
-	s.AddPlayer(p) // same player again
+	_ = s.AddPlayer(p)
+	_ = s.AddPlayer(p) // same player again
 	if len(s.Players) != 1 {
 		t.Errorf("expected 1 player after re-join, got %d", len(s.Players))
 	}
@@ -138,7 +138,7 @@ func TestMarkWinner(t *testing.T) {
 	s := newSession()
 	s.Status = domain.StatusInProgress
 	s.Players = []domain.PlayerSession{player(1), player(2)}
-	s.Finish(map[int64]int{1: 0, 2: 30})
+	_ = s.Finish(map[int64]int{1: 0, 2: 30})
 	s.MarkWinner(1)
 	if !s.Players[0].IsWinner {
 		t.Error("expected player 1 to be marked as winner")

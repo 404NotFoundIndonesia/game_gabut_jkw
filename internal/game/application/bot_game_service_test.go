@@ -142,7 +142,7 @@ func TestAssignGame_Success(t *testing.T) {
 
 func TestAssignGame_Idempotent(t *testing.T) {
 	svc, botID, gameID := newSvc(nil, nil)
-	svc.AssignGame(context.Background(), botID, gameID)
+	_, _ = svc.AssignGame(context.Background(), botID, gameID)
 	// second call must not error
 	_, err := svc.AssignGame(context.Background(), botID, gameID)
 	if err != nil {
@@ -170,7 +170,7 @@ func TestAssignGame_GameNotFound(t *testing.T) {
 
 func TestRemoveGame_Success(t *testing.T) {
 	svc, botID, gameID := newSvc(nil, nil)
-	svc.AssignGame(context.Background(), botID, gameID)
+	_, _ = svc.AssignGame(context.Background(), botID, gameID)
 	if err := svc.RemoveGame(context.Background(), botID, gameID); err != nil {
 		t.Fatalf("RemoveGame: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestRemoveGame_NotAssigned(t *testing.T) {
 
 func TestListBotGames_ReturnsAssigned(t *testing.T) {
 	svc, botID, gameID := newSvc(nil, nil)
-	svc.AssignGame(context.Background(), botID, gameID)
+	_, _ = svc.AssignGame(context.Background(), botID, gameID)
 
 	bgs, err := svc.ListBotGames(context.Background(), botID)
 	if err != nil {

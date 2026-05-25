@@ -307,7 +307,7 @@ func TestCreateSession_GameNotAssigned(t *testing.T) {
 
 func TestCreateSession_DuplicateChatID_Conflict(t *testing.T) {
 	svc, _, _, _ := newSvc()
-	svc.CreateSession(context.Background(), seedBotID, createReq(7777))
+	_, _ = svc.CreateSession(context.Background(), seedBotID, createReq(7777))
 	_, err := svc.CreateSession(context.Background(), seedBotID, createReq(7777))
 	assertConflict(t, err)
 }
@@ -338,7 +338,7 @@ func TestJoinSession_Idempotent(t *testing.T) {
 	svc, repo, _, _ := newSvc()
 	session := mustCreate(t, svc, repo)
 
-	svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
+	_, _ = svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
 	joined, err := svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
 	if err != nil {
 		t.Fatalf("second join: %v", err)
@@ -353,7 +353,7 @@ func TestJoinSession_SessionFull(t *testing.T) {
 	svc, repo, _, _ := newSvc(func(c *svcConfig) { c.game = smallGame })
 	session := mustCreate(t, svc, repo)
 
-	svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "B"})
+	_, _ = svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "B"})
 	_, err := svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 3003, DisplayName: "C"})
 	assertConflict(t, err)
 }
@@ -375,7 +375,7 @@ func TestStartSession_Success(t *testing.T) {
 	svc, repo, _, _ := newSvc()
 	session := mustCreate(t, svc, repo)
 	// Join second player so status moves to WAITING.
-	svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
+	_, _ = svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
 
 	started, err := svc.StartSession(context.Background(), seedBotID, session.ID, 1001)
 	if err != nil {
@@ -389,7 +389,7 @@ func TestStartSession_Success(t *testing.T) {
 func TestStartSession_NonHost_Forbidden(t *testing.T) {
 	svc, repo, _, _ := newSvc()
 	session := mustCreate(t, svc, repo)
-	svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
+	_, _ = svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
 
 	_, err := svc.StartSession(context.Background(), seedBotID, session.ID, 9999)
 	assertForbidden(t, err)
@@ -409,8 +409,8 @@ func TestSubmitMove_Success(t *testing.T) {
 	eng := &fakeEngine{applyEvents: []games.Event{{Type: "CARD_PLAYED"}}}
 	svc, repo, _, _ := newSvc(func(c *svcConfig) { c.engine = eng })
 	session := mustCreate(t, svc, repo)
-	svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
-	svc.StartSession(context.Background(), seedBotID, session.ID, 1001)
+	_, _ = svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
+	_, _ = svc.StartSession(context.Background(), seedBotID, session.ID, 1001)
 
 	result, err := svc.SubmitMove(context.Background(), seedBotID, session.ID, application.MoveRequest{
 		PlayerID: 1001,
@@ -442,8 +442,8 @@ func TestSubmitMove_InvalidMove(t *testing.T) {
 	eng := &fakeEngine{validateErr: apperrors.Unprocessable("not your turn")}
 	svc, repo, _, _ := newSvc(func(c *svcConfig) { c.engine = eng })
 	session := mustCreate(t, svc, repo)
-	svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
-	svc.StartSession(context.Background(), seedBotID, session.ID, 1001)
+	_, _ = svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
+	_, _ = svc.StartSession(context.Background(), seedBotID, session.ID, 1001)
 
 	_, err := svc.SubmitMove(context.Background(), seedBotID, session.ID, application.MoveRequest{PlayerID: 9999})
 	if err == nil {
@@ -460,9 +460,9 @@ func TestSubmitMove_GameOver_TriggersFinish(t *testing.T) {
 		},
 	}
 	scorer := &fakeScoreCommitter{}
-	svc, repo, _, _ := newSvc(func(c *svcConfig) { c.engine = eng })
+	_, repo, _, _ := newSvc(func(c *svcConfig) { c.engine = eng })
 	// Re-build with custom scorer.
-	svc = application.NewSessionService(
+	svc := application.NewSessionService(
 		&fakeBotLookup{bot: seedBot},
 		&fakeGameLookup{game: seedGame},
 		&fakeBotGameCheck{exists: true},
@@ -474,8 +474,8 @@ func TestSubmitMove_GameOver_TriggersFinish(t *testing.T) {
 	)
 
 	session := mustCreate(t, svc, repo)
-	svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
-	svc.StartSession(context.Background(), seedBotID, session.ID, 1001)
+	_, _ = svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
+	_, _ = svc.StartSession(context.Background(), seedBotID, session.ID, 1001)
 
 	_, err := svc.SubmitMove(context.Background(), seedBotID, session.ID, application.MoveRequest{PlayerID: 1001})
 	if err != nil {
@@ -495,8 +495,8 @@ func TestSubmitMove_GameOver_TriggersFinish(t *testing.T) {
 func TestEndSession_ByHost(t *testing.T) {
 	svc, repo, _, scorer := newSvc()
 	session := mustCreate(t, svc, repo)
-	svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
-	svc.StartSession(context.Background(), seedBotID, session.ID, 1001)
+	_, _ = svc.JoinSession(context.Background(), seedBotID, session.ID, application.JoinRequest{TelegramUserID: 2002, DisplayName: "Bob"})
+	_, _ = svc.StartSession(context.Background(), seedBotID, session.ID, 1001)
 
 	ended, err := svc.EndSession(context.Background(), seedBotID, session.ID, application.EndSessionRequest{
 		CallerTelegramID: 1001,
@@ -532,7 +532,7 @@ func TestEndSession_ByAdmin(t *testing.T) {
 func TestEndSession_AlreadyFinished_Conflict(t *testing.T) {
 	svc, repo, _, _ := newSvc()
 	session := mustCreate(t, svc, repo)
-	svc.EndSession(context.Background(), seedBotID, session.ID, application.EndSessionRequest{IsAdmin: true})
+	_, _ = svc.EndSession(context.Background(), seedBotID, session.ID, application.EndSessionRequest{IsAdmin: true})
 
 	_, err := svc.EndSession(context.Background(), seedBotID, session.ID, application.EndSessionRequest{IsAdmin: true})
 	assertConflict(t, err)

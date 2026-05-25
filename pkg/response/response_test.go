@@ -35,7 +35,7 @@ func TestSuccess_WithMeta(t *testing.T) {
 	env := response.Success([]string{}, meta)
 	b, _ := json.Marshal(env)
 	var parsed map[string]any
-	json.Unmarshal(b, &parsed)
+	_ = json.Unmarshal(b, &parsed)
 	if parsed["meta"] == nil {
 		t.Error("meta field must be present when provided")
 	}
@@ -45,7 +45,7 @@ func TestSuccess_NilMeta_Omitted(t *testing.T) {
 	env := response.Success("payload", nil)
 	b, _ := json.Marshal(env)
 	var parsed map[string]any
-	json.Unmarshal(b, &parsed)
+	_ = json.Unmarshal(b, &parsed)
 	if _, exists := parsed["meta"]; exists {
 		t.Error("meta field must be omitted when nil")
 	}
@@ -85,7 +85,7 @@ func TestError_WithDetails(t *testing.T) {
 	env := response.Error(appErr)
 	b, _ := json.Marshal(env)
 	var parsed map[string]any
-	json.Unmarshal(b, &parsed)
+	_ = json.Unmarshal(b, &parsed)
 	errObj := parsed["error"].(map[string]any)
 	details, ok := errObj["details"].([]any)
 	if !ok || len(details) == 0 {

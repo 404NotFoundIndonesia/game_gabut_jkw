@@ -30,7 +30,7 @@ func (r *PostgresSessionRepository) Save(ctx context.Context, s *domain.GameSess
 	if err != nil {
 		return apperrors.Internal("begin tx failed").WithCause(err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO game_sessions

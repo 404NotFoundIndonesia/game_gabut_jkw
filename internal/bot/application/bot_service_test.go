@@ -131,7 +131,7 @@ func TestRegisterBot_DuplicateTelegramID(t *testing.T) {
 	repo := newFakeRepo()
 	svc := newService(repo, 222, nil)
 
-	svc.RegisterBot(context.Background(), "First", "tok1")
+	_, _ = svc.RegisterBot(context.Background(), "First", "tok1")
 	_, err := svc.RegisterBot(context.Background(), "Second", "tok2")
 	if err == nil {
 		t.Fatal("expected error for duplicate telegram ID")

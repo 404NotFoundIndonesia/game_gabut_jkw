@@ -32,7 +32,7 @@ func TestOfflineValidator_CaseInsensitive(t *testing.T) {
 
 func TestAPIValidator_ValidWord(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]bool{"valid": true})
+		_ = json.NewEncoder(w).Encode(map[string]bool{"valid": true})
 	}))
 	defer srv.Close()
 
@@ -44,7 +44,7 @@ func TestAPIValidator_ValidWord(t *testing.T) {
 
 func TestAPIValidator_InvalidWord(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]bool{"valid": false})
+		_ = json.NewEncoder(w).Encode(map[string]bool{"valid": false})
 	}))
 	defer srv.Close()
 
