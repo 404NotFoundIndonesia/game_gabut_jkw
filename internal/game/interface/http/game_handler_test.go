@@ -78,7 +78,7 @@ func req(t *testing.T, app *fiber.App, method, path string, body any) (int, map[
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var out map[string]any
-	json.Unmarshal(raw, &out)
+	_ = json.Unmarshal(raw, &out)
 	return resp.StatusCode, out
 }
 

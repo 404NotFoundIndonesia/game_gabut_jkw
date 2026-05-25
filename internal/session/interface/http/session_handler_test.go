@@ -94,7 +94,7 @@ func doReq(t *testing.T, app *fiber.App, method, path string, body any, auth str
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var out map[string]any
-	json.Unmarshal(raw, &out)
+	_ = json.Unmarshal(raw, &out)
 	return resp.StatusCode, out
 }
 

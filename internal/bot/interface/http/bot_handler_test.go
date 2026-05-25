@@ -87,7 +87,7 @@ func do(t *testing.T, app *fiber.App, method, path string, body any, key string)
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var parsed map[string]any
-	json.Unmarshal(raw, &parsed)
+	_ = json.Unmarshal(raw, &parsed)
 	return resp.StatusCode, parsed
 }
 

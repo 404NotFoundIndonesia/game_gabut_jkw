@@ -60,7 +60,7 @@ func do(t *testing.T, method, path string, body any, headers map[string]string) 
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var out map[string]any
-	json.Unmarshal(raw, &out)
+	_ = json.Unmarshal(raw, &out)
 	return resp.StatusCode, out
 }
 

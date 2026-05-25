@@ -59,7 +59,7 @@ func doGet(t *testing.T, app *fiber.App, path string) (int, map[string]any) {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var out map[string]any
-	json.Unmarshal(raw, &out)
+	_ = json.Unmarshal(raw, &out)
 	return resp.StatusCode, out
 }
 
