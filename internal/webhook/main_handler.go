@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -91,11 +92,21 @@ func (h *MainBotHandler) RegisterRoutes(r fiber.Router) {
 
 func (h *MainBotHandler) handleUpdate(c *fiber.Ctx) error {
 	var update telegram.Update
-	if err := c.BodyParser(&update); err != nil || update.Message == nil || update.Message.From == nil {
-		return c.SendStatus(fiber.StatusOK) // always ACK Telegram
+	if err := c.BodyParser(&update); err != nil {
+		return c.SendStatus(fiber.StatusOK)
 	}
 
 	ctx := c.Context()
+
+	if update.CallbackQuery != nil {
+		h.handleCallbackQuery(ctx, update.CallbackQuery)
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	if update.Message == nil || update.Message.From == nil {
+		return c.SendStatus(fiber.StatusOK)
+	}
+
 	userID := update.Message.From.ID
 	chatID := update.Message.Chat.ID
 	text := strings.TrimSpace(update.Message.Text)
@@ -105,7 +116,7 @@ func (h *MainBotHandler) handleUpdate(c *fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	}
 
-	// Non-command text advances the FSM.
+	// Non-command text advances the /addbot FSM.
 	if !strings.HasPrefix(text, "/") {
 		h.handleFSMText(ctx, userID, chatID, text)
 		return c.SendStatus(fiber.StatusOK)
@@ -116,25 +127,93 @@ func (h *MainBotHandler) handleUpdate(c *fiber.Ctx) error {
 	case "/addbot":
 		h.cmdAddBot(ctx, userID, chatID)
 	case "/removebot":
-		h.cmdRemoveBot(ctx, chatID, args)
+		h.cmdRemoveBotMenu(ctx, chatID)
 	case "/reactivatebot":
-		h.cmdReactivateBot(ctx, chatID, args)
+		h.cmdReactivateBotMenu(ctx, chatID)
 	case "/listbots":
 		h.cmdListBots(ctx, chatID)
 	case "/listgames":
 		h.cmdListGames(ctx, chatID)
 	case "/listbotgames":
-		h.cmdListBotGames(ctx, chatID, args)
+		h.cmdListBotGamesMenu(ctx, chatID)
 	case "/assigngame":
-		h.cmdAssignGame(ctx, chatID, args)
+		h.cmdAssignGameMenu(ctx, chatID)
 	case "/removegame":
-		h.cmdRemoveGame(ctx, chatID, args)
+		h.cmdRemoveGameMenu(ctx, chatID)
 	case "/leaderboard":
-		h.cmdLeaderboard(ctx, chatID, args)
+		h.cmdLeaderboardMenu(ctx, chatID, args)
 	default:
 		h.reply(ctx, chatID, mainHelpText())
 	}
 	return c.SendStatus(fiber.StatusOK)
+}
+
+// ── Callback query dispatcher ─────────────────────────────────────────────────
+
+func (h *MainBotHandler) handleCallbackQuery(ctx context.Context, cq *telegram.CallbackQuery) {
+	if cq.From == nil || cq.Message == nil {
+		return
+	}
+
+	// Always ACK to clear the loading spinner, even for non-admins.
+	_ = h.tgClient.AnswerCallbackQuery(ctx, h.mainToken, cq.ID)
+
+	if _, ok := h.adminIDs[cq.From.ID]; !ok {
+		return
+	}
+
+	chatID := cq.Message.Chat.ID
+	msgID := cq.Message.MessageID
+
+	// Callback data format: "<action>:<arg1>[:<arg2>]"
+	// UUIDs are base64-encoded (22 chars) to stay under Telegram's 64-byte limit.
+	parts := strings.SplitN(cq.Data, ":", 3)
+	if len(parts) == 0 {
+		return
+	}
+
+	switch parts[0] {
+	case "rb": // removebot
+		if len(parts) < 2 {
+			return
+		}
+		h.cbRemoveBot(ctx, chatID, msgID, parts[1])
+	case "rab": // reactivatebot
+		if len(parts) < 2 {
+			return
+		}
+		h.cbReactivateBot(ctx, chatID, msgID, parts[1])
+	case "lbg": // listbotgames
+		if len(parts) < 2 {
+			return
+		}
+		h.cbListBotGames(ctx, chatID, msgID, parts[1])
+	case "ag1": // assigngame step 1: bot selected → show game list
+		if len(parts) < 2 {
+			return
+		}
+		h.cbAssignGameStep2(ctx, chatID, msgID, parts[1])
+	case "ag2": // assigngame step 2: game selected → confirm
+		if len(parts) < 3 {
+			return
+		}
+		h.cbAssignGameConfirm(ctx, chatID, msgID, parts[1], parts[2])
+	case "rg1": // removegame step 1: bot selected → show assigned games
+		if len(parts) < 2 {
+			return
+		}
+		h.cbRemoveGameStep2(ctx, chatID, msgID, parts[1])
+	case "rg2": // removegame step 2: game selected → confirm
+		if len(parts) < 3 {
+			return
+		}
+		h.cbRemoveGameConfirm(ctx, chatID, msgID, parts[1], parts[2])
+	case "lb": // leaderboard: "global" or <bot_id_b64>
+		if len(parts) < 2 {
+			return
+		}
+		h.cbLeaderboard(ctx, chatID, msgID, parts[1])
+	}
 }
 
 // ── FSM ───────────────────────────────────────────────────────────────────────
@@ -173,46 +252,11 @@ func (h *MainBotHandler) handleFSMText(ctx context.Context, userID, chatID int64
 	}
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
+// ── Text commands ─────────────────────────────────────────────────────────────
 
 func (h *MainBotHandler) cmdAddBot(ctx context.Context, userID, chatID int64) {
 	_ = h.convStore.Set(ctx, userID, ConversationData{State: ConvStateAwaitToken}, h.convTTL)
 	h.reply(ctx, chatID, "Send me the BotFather token for the new child bot:")
-}
-
-func (h *MainBotHandler) cmdRemoveBot(ctx context.Context, chatID int64, args []string) {
-	if len(args) == 0 {
-		h.reply(ctx, chatID, "Usage: /removebot <bot_id>")
-		return
-	}
-	botID, err := uuid.Parse(args[0])
-	if err != nil {
-		h.reply(ctx, chatID, "❌ Invalid bot ID.")
-		return
-	}
-	if err := h.botSvc.DeleteBotWithWebhook(ctx, botID); err != nil {
-		h.reply(ctx, chatID, "❌ "+extractMsg(err))
-		return
-	}
-	h.reply(ctx, chatID, "✅ Bot removed and webhook deleted.")
-}
-
-func (h *MainBotHandler) cmdReactivateBot(ctx context.Context, chatID int64, args []string) {
-	if len(args) == 0 {
-		h.reply(ctx, chatID, "Usage: /reactivatebot <bot_id>")
-		return
-	}
-	botID, err := uuid.Parse(args[0])
-	if err != nil {
-		h.reply(ctx, chatID, "❌ Invalid bot ID.")
-		return
-	}
-	bot, err := h.botSvc.ReactivateBotWithWebhook(ctx, botID)
-	if err != nil {
-		h.reply(ctx, chatID, "❌ "+extractMsg(err))
-		return
-	}
-	h.reply(ctx, chatID, fmt.Sprintf("✅ Bot reactivated.\nName: %s\nID: %s", bot.Name, bot.ID))
 }
 
 func (h *MainBotHandler) cmdListBots(ctx context.Context, chatID int64) {
@@ -252,23 +296,144 @@ func (h *MainBotHandler) cmdListGames(ctx context.Context, chatID int64) {
 	h.reply(ctx, chatID, sb.String())
 }
 
-func (h *MainBotHandler) cmdListBotGames(ctx context.Context, chatID int64, args []string) {
-	if len(args) == 0 {
-		h.reply(ctx, chatID, "Usage: /listbotgames <bot_id>")
-		return
-	}
-	botID, err := uuid.Parse(args[0])
-	if err != nil {
-		h.reply(ctx, chatID, "❌ Invalid bot ID.")
-		return
-	}
-	bgs, err := h.gameSvc.ListBotGames(ctx, botID)
+// ── Menu commands (show inline keyboard) ─────────────────────────────────────
+
+func (h *MainBotHandler) cmdRemoveBotMenu(ctx context.Context, chatID int64) {
+	active := true
+	bots, _, err := h.botSvc.ListBots(ctx, botdomain.BotFilter{Active: &active}, 100, 0)
 	if err != nil {
 		h.reply(ctx, chatID, "❌ "+extractMsg(err))
 		return
 	}
+	if len(bots) == 0 {
+		h.reply(ctx, chatID, "No active bots to remove.")
+		return
+	}
+	kb := botsKeyboard(bots, "rb")
+	_ = h.tgClient.SendMessageWithKeyboard(ctx, h.mainToken, chatID, "Select bot to remove:", kb)
+}
+
+func (h *MainBotHandler) cmdReactivateBotMenu(ctx context.Context, chatID int64) {
+	inactive := false
+	bots, _, err := h.botSvc.ListBots(ctx, botdomain.BotFilter{Active: &inactive}, 100, 0)
+	if err != nil {
+		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+		return
+	}
+	if len(bots) == 0 {
+		h.reply(ctx, chatID, "No inactive bots to reactivate.")
+		return
+	}
+	kb := botsKeyboard(bots, "rab")
+	_ = h.tgClient.SendMessageWithKeyboard(ctx, h.mainToken, chatID, "Select bot to reactivate:", kb)
+}
+
+func (h *MainBotHandler) cmdListBotGamesMenu(ctx context.Context, chatID int64) {
+	bots, _, err := h.botSvc.ListBots(ctx, botdomain.BotFilter{}, 100, 0)
+	if err != nil {
+		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+		return
+	}
+	if len(bots) == 0 {
+		h.reply(ctx, chatID, "No bots registered yet. Use /addbot to add one.")
+		return
+	}
+	kb := botsKeyboard(bots, "lbg")
+	_ = h.tgClient.SendMessageWithKeyboard(ctx, h.mainToken, chatID, "Select bot to view games:", kb)
+}
+
+func (h *MainBotHandler) cmdAssignGameMenu(ctx context.Context, chatID int64) {
+	bots, _, err := h.botSvc.ListBots(ctx, botdomain.BotFilter{}, 100, 0)
+	if err != nil {
+		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+		return
+	}
+	if len(bots) == 0 {
+		h.reply(ctx, chatID, "No bots registered yet. Use /addbot to add one.")
+		return
+	}
+	kb := botsKeyboard(bots, "ag1")
+	_ = h.tgClient.SendMessageWithKeyboard(ctx, h.mainToken, chatID, "Select bot to assign a game to:", kb)
+}
+
+func (h *MainBotHandler) cmdRemoveGameMenu(ctx context.Context, chatID int64) {
+	bots, _, err := h.botSvc.ListBots(ctx, botdomain.BotFilter{}, 100, 0)
+	if err != nil {
+		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+		return
+	}
+	if len(bots) == 0 {
+		h.reply(ctx, chatID, "No bots registered yet. Use /addbot to add one.")
+		return
+	}
+	kb := botsKeyboard(bots, "rg1")
+	_ = h.tgClient.SendMessageWithKeyboard(ctx, h.mainToken, chatID, "Select bot to remove a game from:", kb)
+}
+
+func (h *MainBotHandler) cmdLeaderboardMenu(ctx context.Context, chatID int64, args []string) {
+	// Keep "/leaderboard global" as a direct shortcut.
+	if len(args) > 0 && args[0] == "global" {
+		lb, err := h.lbSvc.GetGlobal(ctx, pagination.Params{Limit: 10})
+		if err != nil {
+			h.reply(ctx, chatID, "❌ "+extractMsg(err))
+			return
+		}
+		h.reply(ctx, chatID, "🏆 Global Leaderboard:\n\n"+formatLeaderboard(lb))
+		return
+	}
+	bots, _, err := h.botSvc.ListBots(ctx, botdomain.BotFilter{}, 100, 0)
+	if err != nil {
+		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+		return
+	}
+	kb := leaderboardKeyboard(bots)
+	_ = h.tgClient.SendMessageWithKeyboard(ctx, h.mainToken, chatID, "Select leaderboard:", kb)
+}
+
+// ── Callback handlers ─────────────────────────────────────────────────────────
+
+func (h *MainBotHandler) cbRemoveBot(ctx context.Context, chatID, msgID int64, botIDEnc string) {
+	botID, err := decodeID(botIDEnc)
+	if err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid bot ID.", nil)
+		return
+	}
+	if err := h.botSvc.DeleteBotWithWebhook(ctx, botID); err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+	_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "✅ Bot removed and webhook deleted.", nil)
+}
+
+func (h *MainBotHandler) cbReactivateBot(ctx context.Context, chatID, msgID int64, botIDEnc string) {
+	botID, err := decodeID(botIDEnc)
+	if err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid bot ID.", nil)
+		return
+	}
+	bot, err := h.botSvc.ReactivateBotWithWebhook(ctx, botID)
+	if err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+	_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID,
+		fmt.Sprintf("✅ Bot reactivated.\nName: %s\nID: %s", bot.Name, bot.ID), nil)
+}
+
+func (h *MainBotHandler) cbListBotGames(ctx context.Context, chatID, msgID int64, botIDEnc string) {
+	botID, err := decodeID(botIDEnc)
+	if err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid bot ID.", nil)
+		return
+	}
+	bgs, err := h.gameSvc.ListBotGames(ctx, botID)
+	if err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ "+extractMsg(err), nil)
+		return
+	}
 	if len(bgs) == 0 {
-		h.reply(ctx, chatID, "No games assigned. Use /assigngame <bot_id> <slug> to add one.")
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID,
+			"No games assigned to this bot. Use /assigngame to add one.", nil)
 		return
 	}
 	var sb strings.Builder
@@ -280,77 +445,107 @@ func (h *MainBotHandler) cmdListBotGames(ctx context.Context, chatID int64, args
 			fmt.Fprintf(&sb, "• %s\n", bg.GameID)
 		}
 	}
-	h.reply(ctx, chatID, sb.String())
+	_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, sb.String(), nil)
 }
 
-func (h *MainBotHandler) cmdAssignGame(ctx context.Context, chatID int64, args []string) {
-	if len(args) < 2 {
-		h.reply(ctx, chatID, "Usage: /assigngame <bot_id> <game_slug>")
-		return
-	}
-	botID, err := uuid.Parse(args[0])
+func (h *MainBotHandler) cbAssignGameStep2(ctx context.Context, chatID, msgID int64, botIDEnc string) {
+	botID, err := decodeID(botIDEnc)
 	if err != nil {
-		h.reply(ctx, chatID, "❌ Invalid bot ID.")
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid bot ID.", nil)
 		return
 	}
-	game, err := h.gameSvc.GetGameBySlug(ctx, gamedomain.GameSlug(args[1]))
+	games, err := h.gameSvc.ListGames(ctx)
 	if err != nil {
-		h.reply(ctx, chatID, "❌ Unknown game slug. Use /listgames to see valid options.")
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ "+extractMsg(err), nil)
 		return
 	}
-	if _, err := h.gameSvc.AssignGame(ctx, botID, game.ID); err != nil {
-		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+	if len(games) == 0 {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "No games available.", nil)
 		return
 	}
-	h.reply(ctx, chatID, fmt.Sprintf("✅ Game %q assigned to bot %s.", game.Name, botID))
+	kb := assignGameKeyboard(games, botID)
+	_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "Select game to assign:", &kb)
 }
 
-func (h *MainBotHandler) cmdRemoveGame(ctx context.Context, chatID int64, args []string) {
-	if len(args) < 2 {
-		h.reply(ctx, chatID, "Usage: /removegame <bot_id> <game_slug>")
-		return
-	}
-	botID, err := uuid.Parse(args[0])
+func (h *MainBotHandler) cbAssignGameConfirm(ctx context.Context, chatID, msgID int64, botIDEnc, gameIDEnc string) {
+	botID, err := decodeID(botIDEnc)
 	if err != nil {
-		h.reply(ctx, chatID, "❌ Invalid bot ID.")
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid bot ID.", nil)
 		return
 	}
-	game, err := h.gameSvc.GetGameBySlug(ctx, gamedomain.GameSlug(args[1]))
+	gameID, err := decodeID(gameIDEnc)
 	if err != nil {
-		h.reply(ctx, chatID, "❌ Unknown game slug. Use /listgames to see valid options.")
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid game ID.", nil)
 		return
 	}
-	if err := h.gameSvc.RemoveGame(ctx, botID, game.ID); err != nil {
-		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+	if _, err := h.gameSvc.AssignGame(ctx, botID, gameID); err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ "+extractMsg(err), nil)
 		return
 	}
-	h.reply(ctx, chatID, fmt.Sprintf("✅ Game %q removed from bot %s.", game.Name, botID))
+	_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "✅ Game assigned.", nil)
 }
 
-func (h *MainBotHandler) cmdLeaderboard(ctx context.Context, chatID int64, args []string) {
-	params := pagination.Params{Limit: 10, Offset: 0}
+func (h *MainBotHandler) cbRemoveGameStep2(ctx context.Context, chatID, msgID int64, botIDEnc string) {
+	botID, err := decodeID(botIDEnc)
+	if err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid bot ID.", nil)
+		return
+	}
+	bgs, err := h.gameSvc.ListBotGames(ctx, botID)
+	if err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+	if len(bgs) == 0 {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "No games assigned to this bot.", nil)
+		return
+	}
+	kb := removeGameKeyboard(bgs, botID)
+	_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "Select game to remove:", &kb)
+}
 
-	if len(args) == 0 || args[0] == "global" {
+func (h *MainBotHandler) cbRemoveGameConfirm(ctx context.Context, chatID, msgID int64, botIDEnc, gameIDEnc string) {
+	botID, err := decodeID(botIDEnc)
+	if err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid bot ID.", nil)
+		return
+	}
+	gameID, err := decodeID(gameIDEnc)
+	if err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid game ID.", nil)
+		return
+	}
+	if err := h.gameSvc.RemoveGame(ctx, botID, gameID); err != nil {
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+	_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "✅ Game removed.", nil)
+}
+
+func (h *MainBotHandler) cbLeaderboard(ctx context.Context, chatID, msgID int64, target string) {
+	params := pagination.Params{Limit: 10}
+	if target == "global" {
 		lb, err := h.lbSvc.GetGlobal(ctx, params)
 		if err != nil {
-			h.reply(ctx, chatID, "❌ "+extractMsg(err))
+			_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ "+extractMsg(err), nil)
 			return
 		}
-		h.reply(ctx, chatID, "🏆 Global Leaderboard:\n\n"+formatLeaderboard(lb))
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID,
+			"🏆 Global Leaderboard:\n\n"+formatLeaderboard(lb), nil)
 		return
 	}
-
-	botID, err := uuid.Parse(args[0])
+	botID, err := decodeID(target)
 	if err != nil {
-		h.reply(ctx, chatID, "❌ Invalid bot ID. Use /leaderboard global for the global leaderboard.")
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ Invalid bot ID.", nil)
 		return
 	}
 	lb, err := h.lbSvc.GetByBot(ctx, botID, params)
 	if err != nil {
-		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+		_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID, "❌ "+extractMsg(err), nil)
 		return
 	}
-	h.reply(ctx, chatID, fmt.Sprintf("🏆 Leaderboard for bot %s:\n\n%s", botID, formatLeaderboard(lb)))
+	_ = h.tgClient.EditMessageText(ctx, h.mainToken, chatID, msgID,
+		fmt.Sprintf("🏆 Bot Leaderboard:\n\n%s", formatLeaderboard(lb)), nil)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -359,6 +554,79 @@ func (h *MainBotHandler) reply(ctx context.Context, chatID int64, text string) {
 	if err := h.tgClient.SendMessage(ctx, h.mainToken, chatID, text); err != nil {
 		slog.Error("main bot: send message failed", "chat_id", chatID, "err", err)
 	}
+}
+
+// encodeID base64-encodes a UUID into 22 chars (fits Telegram's 64-byte callback_data limit).
+func encodeID(id uuid.UUID) string {
+	return base64.RawURLEncoding.EncodeToString(id[:])
+}
+
+func decodeID(s string) (uuid.UUID, error) {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+	return uuid.FromBytes(b)
+}
+
+// botsKeyboard builds a one-button-per-row keyboard from a bot list.
+// prefix is the callback data action prefix (e.g. "rb").
+func botsKeyboard(bots []*botdomain.Bot, prefix string) telegram.InlineKeyboardMarkup {
+	rows := make([][]telegram.InlineKeyboardButton, len(bots))
+	for i, b := range bots {
+		rows[i] = []telegram.InlineKeyboardButton{
+			{Text: b.Name, CallbackData: prefix + ":" + encodeID(b.ID)},
+		}
+	}
+	return telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// leaderboardKeyboard adds a "Global" button at the top plus one button per bot.
+func leaderboardKeyboard(bots []*botdomain.Bot) telegram.InlineKeyboardMarkup {
+	rows := make([][]telegram.InlineKeyboardButton, 0, len(bots)+1)
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		{Text: "🌍 Global", CallbackData: "lb:global"},
+	})
+	for _, b := range bots {
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			{Text: b.Name, CallbackData: "lb:" + encodeID(b.ID)},
+		})
+	}
+	return telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// assignGameKeyboard builds the game selection keyboard for /assigngame step 2.
+// The bot ID is embedded in each button's callback data.
+func assignGameKeyboard(games []*gamedomain.Game, botID uuid.UUID) telegram.InlineKeyboardMarkup {
+	encodedBot := encodeID(botID)
+	rows := make([][]telegram.InlineKeyboardButton, len(games))
+	for i, g := range games {
+		rows[i] = []telegram.InlineKeyboardButton{
+			{
+				Text:         fmt.Sprintf("%s (%s)", g.Name, g.Slug),
+				CallbackData: "ag2:" + encodedBot + ":" + encodeID(g.ID),
+			},
+		}
+	}
+	return telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// removeGameKeyboard builds the game selection keyboard for /removegame step 2.
+func removeGameKeyboard(botGames []*gamedomain.BotGame, botID uuid.UUID) telegram.InlineKeyboardMarkup {
+	encodedBot := encodeID(botID)
+	rows := make([][]telegram.InlineKeyboardButton, 0, len(botGames))
+	for _, bg := range botGames {
+		if bg.Game == nil {
+			continue
+		}
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			{
+				Text:         fmt.Sprintf("%s (%s)", bg.Game.Name, bg.Game.Slug),
+				CallbackData: "rg2:" + encodedBot + ":" + encodeID(bg.GameID),
+			},
+		})
+	}
+	return telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 // parseCommand splits "/command@botname arg1 arg2" into ("/command", ["arg1","arg2"]).
@@ -396,13 +664,13 @@ func mainHelpText() string {
 	return `Available commands:
 
 /addbot — register a new child bot
-/removebot <bot_id> — remove a bot
-/reactivatebot <bot_id> — reactivate an inactive bot
+/removebot — remove a bot (pick from list)
+/reactivatebot — reactivate an inactive bot (pick from list)
 /listbots — list all registered bots
 /listgames — list available games
-/listbotgames <bot_id> — list games assigned to a bot
-/assigngame <bot_id> <game_slug> — assign a game to a bot
-/removegame <bot_id> <game_slug> — remove a game from a bot
-/leaderboard <bot_id> — per-bot leaderboard
-/leaderboard global — global leaderboard`
+/listbotgames — list games assigned to a bot (pick from list)
+/assigngame — assign a game to a bot (pick from list)
+/removegame — remove a game from a bot (pick from list)
+/leaderboard — show leaderboard (pick global or per-bot)
+/leaderboard global — global leaderboard directly`
 }

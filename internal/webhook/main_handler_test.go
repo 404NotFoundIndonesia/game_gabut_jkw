@@ -3,8 +3,8 @@ package webhook_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -25,9 +25,9 @@ import (
 // ── stubs ─────────────────────────────────────────────────────────────────────
 
 type stubMainBotSvc struct {
-	bot    *botdomain.Bot
-	bots   []*botdomain.Bot
-	err    error
+	bot  *botdomain.Bot
+	bots []*botdomain.Bot
+	err  error
 }
 
 func (s *stubMainBotSvc) RegisterBotWithWebhook(_ context.Context, name, _ string) (*botdomain.Bot, error) {
@@ -46,9 +46,9 @@ func (s *stubMainBotSvc) ListBots(_ context.Context, _ botdomain.BotFilter, _, _
 }
 
 type stubMainGameSvc struct {
-	games   []*gamedomain.Game
+	games    []*gamedomain.Game
 	botGames []*gamedomain.BotGame
-	err     error
+	err      error
 }
 
 func (s *stubMainGameSvc) ListGames(_ context.Context) ([]*gamedomain.Game, error) {
@@ -80,6 +80,8 @@ func (s *stubMainLbSvc) GetGlobal(_ context.Context, _ pagination.Params) (*lbdo
 	return s.lb, s.err
 }
 
+// stubTGClient satisfies telegram.Client for tests.
+// sendCalled counts all outgoing messages (plain, keyboard, and edits).
 type stubTGClient struct {
 	botIDErr    error
 	sendCalled  int
@@ -92,12 +94,23 @@ func (s *stubTGClient) GetBotID(_ context.Context, _ string) (int64, error) {
 	}
 	return 12345, nil
 }
-func (s *stubTGClient) SetWebhook(_ context.Context, _, _, _ string) error    { return nil }
-func (s *stubTGClient) DeleteWebhook(_ context.Context, _ string) error       { return nil }
+func (s *stubTGClient) SetWebhook(_ context.Context, _, _, _ string) error { return nil }
+func (s *stubTGClient) DeleteWebhook(_ context.Context, _ string) error    { return nil }
 func (s *stubTGClient) GetWebhookInfo(_ context.Context, _ string) (telegram.WebhookInfo, error) {
 	return telegram.WebhookInfo{}, nil
 }
 func (s *stubTGClient) SendMessage(_ context.Context, _ string, _ int64, text string) error {
+	s.sendCalled++
+	s.lastMessage = text
+	return nil
+}
+func (s *stubTGClient) SendMessageWithKeyboard(_ context.Context, _ string, _ int64, text string, _ telegram.InlineKeyboardMarkup) error {
+	s.sendCalled++
+	s.lastMessage = text
+	return nil
+}
+func (s *stubTGClient) AnswerCallbackQuery(_ context.Context, _, _ string) error { return nil }
+func (s *stubTGClient) EditMessageText(_ context.Context, _ string, _, _ int64, text string, _ *telegram.InlineKeyboardMarkup) error {
 	s.sendCalled++
 	s.lastMessage = text
 	return nil
@@ -148,6 +161,21 @@ func makeUpdate(userID int64, text string) telegram.Update {
 	}
 }
 
+func makeCallbackUpdate(userID int64, chatID, msgID int64, data string) telegram.Update {
+	return telegram.Update{
+		UpdateID: 1,
+		CallbackQuery: &telegram.CallbackQuery{
+			ID:   "cq-1",
+			From: &telegram.User{ID: userID},
+			Message: &telegram.Message{
+				MessageID: msgID,
+				Chat:      &telegram.Chat{ID: chatID},
+			},
+			Data: data,
+		},
+	}
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 func TestMainHandler_NonAdminRejected(t *testing.T) {
@@ -194,59 +222,136 @@ func TestMainHandler_ListGames(t *testing.T) {
 	}
 }
 
-func TestMainHandler_RemoveBot_MissingArg(t *testing.T) {
+// /removebot with no bots shows a text message (not a keyboard).
+func TestMainHandler_RemoveBot_NoBots(t *testing.T) {
 	tg := &stubTGClient{}
-	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
+	app := newMainApp(&stubMainBotSvc{bots: nil}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
 
 	postUpdate(t, app, makeUpdate(mainTestAdminID, "/removebot"), "")
-	if tg.lastMessage != "Usage: /removebot <bot_id>" {
-		t.Errorf("expected usage hint, got %q", tg.lastMessage)
+	if tg.sendCalled == 0 {
+		t.Error("expected reply")
+	}
+	if !contains(tg.lastMessage, "No active bots") {
+		t.Errorf("expected 'No active bots' message, got %q", tg.lastMessage)
 	}
 }
 
-func TestMainHandler_RemoveBot_InvalidUUID(t *testing.T) {
+// /removebot with bots available shows a keyboard (SendMessageWithKeyboard).
+func TestMainHandler_RemoveBot_ShowsKeyboard(t *testing.T) {
+	b := botdomain.NewBot("MyBot", botdomain.NewBotToken("enc"), "hash", 1)
+	tg := &stubTGClient{}
+	app := newMainApp(&stubMainBotSvc{bots: []*botdomain.Bot{b}}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
+
+	postUpdate(t, app, makeUpdate(mainTestAdminID, "/removebot"), "")
+	if tg.sendCalled == 0 {
+		t.Error("expected keyboard message")
+	}
+	if !contains(tg.lastMessage, "Select bot") {
+		t.Errorf("expected selection prompt, got %q", tg.lastMessage)
+	}
+}
+
+// Callback: rb:<encoded_bot_id> removes the bot and edits the message.
+func TestMainHandler_CbRemoveBot_Success(t *testing.T) {
 	tg := &stubTGClient{}
 	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
 
-	postUpdate(t, app, makeUpdate(mainTestAdminID, "/removebot not-a-uuid"), "")
-	if tg.lastMessage != "❌ Invalid bot ID." {
-		t.Errorf("expected invalid bot ID reply, got %q", tg.lastMessage)
+	id := uuid.New()
+	enc := encodeIDTest(id)
+	postUpdate(t, app, makeCallbackUpdate(mainTestAdminID, 100, 42, "rb:"+enc), "")
+	if tg.sendCalled == 0 {
+		t.Error("expected edit after remove")
+	}
+	if !contains(tg.lastMessage, "removed") {
+		t.Errorf("expected removal confirmation, got %q", tg.lastMessage)
 	}
 }
 
-func TestMainHandler_RemoveBot_ServiceError(t *testing.T) {
+// Callback: rb:<encoded_bot_id> with service error shows error in edited message.
+func TestMainHandler_CbRemoveBot_ServiceError(t *testing.T) {
 	tg := &stubTGClient{}
 	svc := &stubMainBotSvc{err: apperrors.NotFound("bot")}
 	app := newMainApp(svc, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
 
-	postUpdate(t, app, makeUpdate(mainTestAdminID, "/removebot "+uuid.New().String()), "")
+	id := uuid.New()
+	enc := encodeIDTest(id)
+	postUpdate(t, app, makeCallbackUpdate(mainTestAdminID, 100, 42, "rb:"+enc), "")
 	if tg.sendCalled == 0 {
-		t.Error("expected error reply")
+		t.Error("expected error edit")
+	}
+	if !contains(tg.lastMessage, "❌") {
+		t.Errorf("expected error message, got %q", tg.lastMessage)
 	}
 }
 
-func TestMainHandler_AssignGame_MissingArgs(t *testing.T) {
+// /assigngame with no bots shows a text message.
+func TestMainHandler_AssignGame_NoBots(t *testing.T) {
 	tg := &stubTGClient{}
 	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
 
 	postUpdate(t, app, makeUpdate(mainTestAdminID, "/assigngame"), "")
-	if tg.lastMessage != "Usage: /assigngame <bot_id> <game_slug>" {
-		t.Errorf("expected usage hint, got %q", tg.lastMessage)
-	}
-}
-
-func TestMainHandler_AssignGame_UnknownSlug(t *testing.T) {
-	tg := &stubTGClient{}
-	gameSvc := &stubMainGameSvc{err: apperrors.NotFound("game")}
-	app := newMainApp(&stubMainBotSvc{}, gameSvc, &stubMainLbSvc{}, tg)
-
-	postUpdate(t, app, makeUpdate(mainTestAdminID, "/assigngame "+uuid.New().String()+" unknown_game"), "")
 	if tg.sendCalled == 0 {
-		t.Error("expected error reply for unknown slug")
+		t.Error("expected a reply")
+	}
+	if !contains(tg.lastMessage, "No bots") {
+		t.Errorf("expected no-bots message, got %q", tg.lastMessage)
 	}
 }
 
-func TestMainHandler_Leaderboard_Global(t *testing.T) {
+// /assigngame with bots shows a keyboard.
+func TestMainHandler_AssignGame_ShowsKeyboard(t *testing.T) {
+	b := botdomain.NewBot("MyBot", botdomain.NewBotToken("enc"), "hash", 1)
+	tg := &stubTGClient{}
+	app := newMainApp(&stubMainBotSvc{bots: []*botdomain.Bot{b}}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
+
+	postUpdate(t, app, makeUpdate(mainTestAdminID, "/assigngame"), "")
+	if !contains(tg.lastMessage, "Select bot") {
+		t.Errorf("expected selection prompt, got %q", tg.lastMessage)
+	}
+}
+
+// Callback ag1: shows game list keyboard.
+func TestMainHandler_CbAssignGame_Step2_ShowsGames(t *testing.T) {
+	games := []*gamedomain.Game{
+		{ID: uuid.New(), Slug: "uno", Name: "Uno"},
+	}
+	tg := &stubTGClient{}
+	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{games: games}, &stubMainLbSvc{}, tg)
+
+	enc := encodeIDTest(uuid.New())
+	postUpdate(t, app, makeCallbackUpdate(mainTestAdminID, 100, 42, "ag1:"+enc), "")
+	if !contains(tg.lastMessage, "Select game") {
+		t.Errorf("expected game selection prompt, got %q", tg.lastMessage)
+	}
+}
+
+// Callback ag2: assigns game and confirms.
+func TestMainHandler_CbAssignGame_Confirm_Success(t *testing.T) {
+	tg := &stubTGClient{}
+	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
+
+	botEnc := encodeIDTest(uuid.New())
+	gameEnc := encodeIDTest(uuid.New())
+	postUpdate(t, app, makeCallbackUpdate(mainTestAdminID, 100, 42, "ag2:"+botEnc+":"+gameEnc), "")
+	if !contains(tg.lastMessage, "assigned") {
+		t.Errorf("expected assignment confirmation, got %q", tg.lastMessage)
+	}
+}
+
+// Callback ag2: service error shows error.
+func TestMainHandler_CbAssignGame_Confirm_Error(t *testing.T) {
+	tg := &stubTGClient{}
+	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{err: apperrors.NotFound("game")}, &stubMainLbSvc{}, tg)
+
+	botEnc := encodeIDTest(uuid.New())
+	gameEnc := encodeIDTest(uuid.New())
+	postUpdate(t, app, makeCallbackUpdate(mainTestAdminID, 100, 42, "ag2:"+botEnc+":"+gameEnc), "")
+	if !contains(tg.lastMessage, "❌") {
+		t.Errorf("expected error message, got %q", tg.lastMessage)
+	}
+}
+
+func TestMainHandler_Leaderboard_Global_DirectArg(t *testing.T) {
 	lb := &lbdomain.Leaderboard{
 		Entries: []lbdomain.LeaderboardEntry{{Rank: 1, DisplayName: "Alice", TotalScore: 100, Wins: 3}},
 	}
@@ -257,16 +362,59 @@ func TestMainHandler_Leaderboard_Global(t *testing.T) {
 	if tg.sendCalled == 0 || tg.lastMessage == "" {
 		t.Error("expected leaderboard reply")
 	}
+	if !contains(tg.lastMessage, "Global Leaderboard") {
+		t.Errorf("expected global leaderboard, got %q", tg.lastMessage)
+	}
 }
 
-func TestMainHandler_Leaderboard_NoArgs_GlobalFallback(t *testing.T) {
+func TestMainHandler_Leaderboard_NoArgs_ShowsMenu(t *testing.T) {
+	tg := &stubTGClient{}
+	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
+
+	postUpdate(t, app, makeUpdate(mainTestAdminID, "/leaderboard"), "")
+	if tg.sendCalled == 0 {
+		t.Error("expected menu reply for /leaderboard with no args")
+	}
+	if !contains(tg.lastMessage, "Select leaderboard") {
+		t.Errorf("expected selection prompt, got %q", tg.lastMessage)
+	}
+}
+
+// Callback lb:global returns global leaderboard via EditMessageText.
+func TestMainHandler_CbLeaderboard_Global(t *testing.T) {
+	lb := &lbdomain.Leaderboard{
+		Entries: []lbdomain.LeaderboardEntry{{Rank: 1, DisplayName: "Bob", TotalScore: 50, Wins: 1}},
+	}
+	tg := &stubTGClient{}
+	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{}, &stubMainLbSvc{lb: lb}, tg)
+
+	postUpdate(t, app, makeCallbackUpdate(mainTestAdminID, 100, 42, "lb:global"), "")
+	if !contains(tg.lastMessage, "Global Leaderboard") {
+		t.Errorf("expected global leaderboard, got %q", tg.lastMessage)
+	}
+}
+
+// Callback lb:<bot_id> returns per-bot leaderboard.
+func TestMainHandler_CbLeaderboard_Bot(t *testing.T) {
 	lb := &lbdomain.Leaderboard{Entries: []lbdomain.LeaderboardEntry{}}
 	tg := &stubTGClient{}
 	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{}, &stubMainLbSvc{lb: lb}, tg)
 
-	postUpdate(t, app, makeUpdate(mainTestAdminID, "/leaderboard"), "")
-	if tg.sendCalled == 0 {
-		t.Error("expected reply for /leaderboard with no args")
+	enc := encodeIDTest(uuid.New())
+	postUpdate(t, app, makeCallbackUpdate(mainTestAdminID, 100, 42, "lb:"+enc), "")
+	if !contains(tg.lastMessage, "Bot Leaderboard") {
+		t.Errorf("expected bot leaderboard, got %q", tg.lastMessage)
+	}
+}
+
+// Non-admin callback is silently ignored (AnswerCallbackQuery is called but no edit/send).
+func TestMainHandler_Callback_NonAdminIgnored(t *testing.T) {
+	tg := &stubTGClient{}
+	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
+
+	postUpdate(t, app, makeCallbackUpdate(999999, 100, 42, "lb:global"), "")
+	if tg.sendCalled != 0 {
+		t.Errorf("non-admin callback should trigger no send/edit, got %d calls with %q", tg.sendCalled, tg.lastMessage)
 	}
 }
 
@@ -294,7 +442,7 @@ func TestMainHandler_AddBot_FSM(t *testing.T) {
 }
 
 func TestMainHandler_AddBot_InvalidToken(t *testing.T) {
-	tg := &stubTGClient{botIDErr: errors.New("bad token")}
+	tg := &stubTGClient{botIDErr: apperrors.NotFound("bot")}
 	app := newMainApp(&stubMainBotSvc{}, &stubMainGameSvc{}, &stubMainLbSvc{}, tg)
 
 	postUpdate(t, app, makeUpdate(mainTestAdminID, "/addbot"), "")
@@ -324,6 +472,13 @@ func TestMainHandler_AlwaysReturns200(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200 for malformed body, got %d", resp.StatusCode)
 	}
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// encodeIDTest mirrors the handler's encodeID for constructing test callback data.
+func encodeIDTest(id uuid.UUID) string {
+	return base64.RawURLEncoding.EncodeToString(id[:])
 }
 
 func contains(s, sub string) bool {

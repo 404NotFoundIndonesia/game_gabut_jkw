@@ -23,8 +23,18 @@ type Client interface {
 	// GetWebhookInfo returns the current webhook configuration for the given bot.
 	GetWebhookInfo(ctx context.Context, botToken string) (WebhookInfo, error)
 
-	// SendMessage sends a text message to a Telegram chat.
+	// SendMessage sends a plain text message to a Telegram chat.
 	SendMessage(ctx context.Context, botToken string, chatID int64, text string) error
+
+	// SendMessageWithKeyboard sends a message with an attached inline keyboard.
+	SendMessageWithKeyboard(ctx context.Context, botToken string, chatID int64, text string, keyboard InlineKeyboardMarkup) error
+
+	// AnswerCallbackQuery acknowledges a button tap (clears the loading spinner).
+	AnswerCallbackQuery(ctx context.Context, botToken, callbackQueryID string) error
+
+	// EditMessageText replaces the text (and optionally the keyboard) of an existing message.
+	// Pass nil keyboard to remove the inline keyboard.
+	EditMessageText(ctx context.Context, botToken string, chatID, messageID int64, text string, keyboard *InlineKeyboardMarkup) error
 }
 
 type httpClient struct {
@@ -159,5 +169,40 @@ func (c *httpClient) SendMessage(ctx context.Context, botToken string, chatID in
 		"text":    text,
 	}
 	_, err := c.callAPI(ctx, botToken, "sendMessage", payload)
+	return err
+}
+
+// ── SendMessageWithKeyboard ───────────────────────────────────────────────────
+
+func (c *httpClient) SendMessageWithKeyboard(ctx context.Context, botToken string, chatID int64, text string, keyboard InlineKeyboardMarkup) error {
+	payload := map[string]any{
+		"chat_id":      chatID,
+		"text":         text,
+		"reply_markup": keyboard,
+	}
+	_, err := c.callAPI(ctx, botToken, "sendMessage", payload)
+	return err
+}
+
+// ── AnswerCallbackQuery ───────────────────────────────────────────────────────
+
+func (c *httpClient) AnswerCallbackQuery(ctx context.Context, botToken, callbackQueryID string) error {
+	payload := map[string]string{"callback_query_id": callbackQueryID}
+	_, err := c.callAPI(ctx, botToken, "answerCallbackQuery", payload)
+	return err
+}
+
+// ── EditMessageText ───────────────────────────────────────────────────────────
+
+func (c *httpClient) EditMessageText(ctx context.Context, botToken string, chatID, messageID int64, text string, keyboard *InlineKeyboardMarkup) error {
+	payload := map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"text":       text,
+	}
+	if keyboard != nil {
+		payload["reply_markup"] = keyboard
+	}
+	_, err := c.callAPI(ctx, botToken, "editMessageText", payload)
 	return err
 }

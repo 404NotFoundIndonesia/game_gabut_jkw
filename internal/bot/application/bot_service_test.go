@@ -106,6 +106,13 @@ func (f *fakeTGClient) SendMessage(_ context.Context, _ string, _ int64, _ strin
 func (f *fakeTGClient) GetWebhookInfo(_ context.Context, _ string) (telegram.WebhookInfo, error) {
 	return telegram.WebhookInfo{}, f.err
 }
+func (f *fakeTGClient) SendMessageWithKeyboard(_ context.Context, _ string, _ int64, _ string, _ telegram.InlineKeyboardMarkup) error {
+	return f.err
+}
+func (f *fakeTGClient) AnswerCallbackQuery(_ context.Context, _, _ string) error { return f.err }
+func (f *fakeTGClient) EditMessageText(_ context.Context, _ string, _, _ int64, _ string, _ *telegram.InlineKeyboardMarkup) error {
+	return f.err
+}
 
 func newService(repo *fakeBotRepo, tgID int64, tgErr error) *application.BotService {
 	return application.NewBotService(
@@ -290,6 +297,15 @@ func (f *fakeTGClientWithWebhook) GetWebhookInfo(_ context.Context, _ string) (t
 	return telegram.WebhookInfo{}, f.botErr
 }
 func (f *fakeTGClientWithWebhook) SendMessage(_ context.Context, _ string, _ int64, _ string) error {
+	return nil
+}
+func (f *fakeTGClientWithWebhook) SendMessageWithKeyboard(_ context.Context, _ string, _ int64, _ string, _ telegram.InlineKeyboardMarkup) error {
+	return nil
+}
+func (f *fakeTGClientWithWebhook) AnswerCallbackQuery(_ context.Context, _, _ string) error {
+	return nil
+}
+func (f *fakeTGClientWithWebhook) EditMessageText(_ context.Context, _ string, _, _ int64, _ string, _ *telegram.InlineKeyboardMarkup) error {
 	return nil
 }
 
