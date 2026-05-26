@@ -14,6 +14,8 @@ import (
 
 	botdomain "github.com/404NFIDv2/bot-game-management/internal/bot/domain"
 	gamedomain "github.com/404NFIDv2/bot-game-management/internal/game/domain"
+	sambungkata "github.com/404NFIDv2/bot-game-management/internal/games/sambung_kata"
+	truthordate "github.com/404NFIDv2/bot-game-management/internal/games/truth_or_date"
 	"github.com/404NFIDv2/bot-game-management/internal/games/uno"
 	lbdomain "github.com/404NFIDv2/bot-game-management/internal/leaderboard/domain"
 	sessionapp "github.com/404NFIDv2/bot-game-management/internal/session/application"
@@ -151,6 +153,7 @@ func (h *ChildBotHandler) handleMessage(ctx context.Context, botID uuid.UUID, bo
 	slog.Info("child handler: message received", "bot_id", botID, "chat_id", chatID, "user_id", userID, "text", text, "chat_type", chatType)
 
 	if !strings.HasPrefix(text, "/") {
+		h.handleTextMove(ctx, botID, chatID, userID, text, bot)
 		return
 	}
 
@@ -207,6 +210,10 @@ func (h *ChildBotHandler) handleCallbackQuery(ctx context.Context, botID uuid.UU
 		h.cbWildColor(ctx, botID, chatID, msgID, userID, cq.ID, data[7:], bot)
 	case strings.HasPrefix(data, "cng:"):
 		h.cbNewGame(ctx, botID, chatID, msgID, userID, displayName, data[4:], bot)
+	case strings.HasPrefix(data, "tdchoice:"):
+		h.cbTDChoice(ctx, botID, chatID, msgID, userID, cq.ID, data[9:], bot)
+	case data == "tdskip":
+		h.cbTDSkip(ctx, botID, chatID, msgID, userID, cq.ID, bot)
 	}
 }
 
@@ -306,20 +313,60 @@ func (h *ChildBotHandler) cmdStart(ctx context.Context, botID uuid.UUID, chatID,
 	}
 
 	game, err := h.gameSvc.GetGame(ctx, session.GameID)
-	if err != nil || game.Slug != gamedomain.SlugUno {
-		h.childReply(ctx, bot, chatID, "🎮 Game started! Submit moves with /move <payload>")
-		return
-	}
-
-	// Uno: send turn announcement and store game message ID.
-	state, err := parseUnoState(session.State)
 	if err != nil {
 		h.childReply(ctx, bot, chatID, "🎮 Game started!")
+		return
+	}
+	switch game.Slug {
+	case gamedomain.SlugUno:
+		h.startUno(ctx, botID, chatID, session, bot)
+	case gamedomain.SlugSambungKata:
+		h.startSambungKata(ctx, botID, chatID, session, bot)
+	case gamedomain.SlugTruthOrDate:
+		h.startTruthOrDate(ctx, botID, chatID, session, bot)
+	default:
+		h.childReply(ctx, bot, chatID, "🎮 Game started! Submit moves with /move <payload>")
+	}
+}
+
+func (h *ChildBotHandler) startUno(ctx context.Context, botID uuid.UUID, chatID int64, session *sessiondomain.GameSession, bot *botdomain.Bot) {
+	state, err := parseUnoState(session.State)
+	if err != nil {
+		h.childReply(ctx, bot, chatID, "🎮 Uno started!")
 		return
 	}
 	playerName := playerDisplayName(session, state.PlayerOrder[state.CurrentTurnIdx])
 	text := unoTurnText(state.DiscardPile[len(state.DiscardPile)-1], playerName, len(state.Hands[state.PlayerOrder[state.CurrentTurnIdx]]))
 	msgID, err := h.childSendGetID(ctx, bot, chatID, text, unoViewHandKeyboard)
+	if err == nil {
+		_ = h.gameMsgStore.Set(ctx, botID, chatID, msgID, h.sessionTTL)
+	}
+}
+
+func (h *ChildBotHandler) startSambungKata(ctx context.Context, botID uuid.UUID, chatID int64, session *sessiondomain.GameSession, bot *botdomain.Bot) {
+	state, err := parseSKState(session.State)
+	if err != nil {
+		h.childReply(ctx, bot, chatID, "🎮 Sambung Kata started!")
+		return
+	}
+	playerName := playerDisplayName(session, state.PlayerOrder[state.CurrentTurnIdx])
+	text := skTurnText(playerName, state.LastWord)
+	msgID, err := h.childSendGetID(ctx, bot, chatID, text, telegram.InlineKeyboardMarkup{})
+	if err == nil {
+		_ = h.gameMsgStore.Set(ctx, botID, chatID, msgID, h.sessionTTL)
+	}
+}
+
+func (h *ChildBotHandler) startTruthOrDate(ctx context.Context, botID uuid.UUID, chatID int64, session *sessiondomain.GameSession, bot *botdomain.Bot) {
+	state, err := parseTDState(session.State)
+	if err != nil {
+		h.childReply(ctx, bot, chatID, "🎮 Truth or Date started!")
+		return
+	}
+	playerName := playerDisplayName(session, state.PlayerOrder[state.CurrentTurnIdx])
+	text := tdTurnText(playerName, state.Round)
+	kb := tdChoiceKeyboard()
+	msgID, err := h.childSendGetID(ctx, bot, chatID, text, kb)
 	if err == nil {
 		_ = h.gameMsgStore.Set(ctx, botID, chatID, msgID, h.sessionTTL)
 	}
@@ -716,6 +763,206 @@ func (h *ChildBotHandler) childAnswerCallbackAlert(ctx context.Context, bot *bot
 		return err
 	}
 	return h.tgClient.AnswerCallbackQueryAlert(ctx, rawToken, callbackQueryID, text)
+}
+
+// ── Text-move handler (sambung_kata, truth_or_date) ───────────────────────────
+
+func (h *ChildBotHandler) handleTextMove(ctx context.Context, botID uuid.UUID, chatID, userID int64, text string, bot *botdomain.Bot) {
+	sessionID, err := h.chatIndex.Get(ctx, botID, chatID)
+	if err != nil {
+		return
+	}
+	session, err := h.sessionSvc.GetSession(ctx, botID, sessionID)
+	if err != nil || session.Status == sessiondomain.StatusFinished {
+		return
+	}
+	game, err := h.gameSvc.GetGame(ctx, session.GameID)
+	if err != nil {
+		return
+	}
+	switch game.Slug {
+	case gamedomain.SlugSambungKata:
+		h.handleSKWord(ctx, botID, chatID, userID, sessionID, session, text, bot)
+	case gamedomain.SlugTruthOrDate:
+		h.handleTDAnswer(ctx, botID, chatID, userID, sessionID, session, text, bot)
+	}
+}
+
+func (h *ChildBotHandler) handleSKWord(ctx context.Context, botID uuid.UUID, chatID, userID int64, sessionID uuid.UUID, session *sessiondomain.GameSession, word string, bot *botdomain.Bot) {
+	state, err := parseSKState(session.State)
+	if err != nil || state.Status == sambungkata.StatusFinished {
+		return
+	}
+	if state.PlayerOrder[state.CurrentTurnIdx] != userID {
+		return
+	}
+	result, err := h.sessionSvc.SubmitMove(ctx, botID, sessionID, sessionapp.MoveRequest{
+		PlayerID: userID,
+		Payload:  map[string]any{"word": word},
+	})
+	if err != nil {
+		h.childReply(ctx, bot, chatID, "❌ "+extractMsg(err))
+		return
+	}
+	h.advanceTurnSK(ctx, botID, chatID, result, bot)
+}
+
+func (h *ChildBotHandler) handleTDAnswer(ctx context.Context, botID uuid.UUID, chatID, userID int64, sessionID uuid.UUID, session *sessiondomain.GameSession, answer string, bot *botdomain.Bot) {
+	state, err := parseTDState(session.State)
+	if err != nil || state.Status == truthordate.StatusFinished {
+		return
+	}
+	if state.PlayerOrder[state.CurrentTurnIdx] != userID {
+		return
+	}
+	if state.CurrentQuestion == "" {
+		return
+	}
+	result, err := h.sessionSvc.SubmitMove(ctx, botID, sessionID, sessionapp.MoveRequest{
+		PlayerID: userID,
+		Payload:  map[string]any{"action": "answer", "answer": answer},
+	})
+	if err != nil {
+		h.childReply(ctx, bot, chatID, "❌ "+extractMsg(err))
+		return
+	}
+	h.advanceTurnTD(ctx, botID, chatID, result, bot)
+}
+
+// ── Truth or Date callbacks ───────────────────────────────────────────────────
+
+func (h *ChildBotHandler) cbTDChoice(ctx context.Context, botID uuid.UUID, groupChatID, groupMsgID, userID int64, callbackID, choice string, bot *botdomain.Bot) {
+	sessionID, err := h.chatIndex.Get(ctx, botID, groupChatID)
+	if err != nil {
+		_ = h.childAnswerCallbackAlert(ctx, bot, callbackID, "No active game in this chat.")
+		return
+	}
+	_ = h.childAnswerCallback(ctx, bot, callbackID)
+	result, err := h.sessionSvc.SubmitMove(ctx, botID, sessionID, sessionapp.MoveRequest{
+		PlayerID: userID,
+		Payload:  map[string]any{"action": "choice", "choice": choice},
+	})
+	if err != nil {
+		h.childEditMessage(ctx, bot, groupChatID, groupMsgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+	state, err := parseTDState(result.Session.State)
+	if err != nil {
+		return
+	}
+	playerName := playerDisplayName(result.Session, userID)
+	text := tdQuestionText(playerName, choice, state.CurrentQuestion)
+	kb := tdSkipKeyboard()
+	h.childEditMessage(ctx, bot, groupChatID, groupMsgID, text, &kb)
+}
+
+func (h *ChildBotHandler) cbTDSkip(ctx context.Context, botID uuid.UUID, groupChatID, groupMsgID, userID int64, callbackID string, bot *botdomain.Bot) {
+	sessionID, err := h.chatIndex.Get(ctx, botID, groupChatID)
+	if err != nil {
+		_ = h.childAnswerCallbackAlert(ctx, bot, callbackID, "No active game.")
+		return
+	}
+	_ = h.childAnswerCallback(ctx, bot, callbackID)
+	result, err := h.sessionSvc.SubmitMove(ctx, botID, sessionID, sessionapp.MoveRequest{
+		PlayerID: userID,
+		Payload:  map[string]any{"action": "skip"},
+	})
+	if err != nil {
+		h.childEditMessage(ctx, bot, groupChatID, groupMsgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+	h.advanceTurnTD(ctx, botID, groupChatID, result, bot)
+}
+
+// ── Sambung Kata advance ──────────────────────────────────────────────────────
+
+func (h *ChildBotHandler) advanceTurnSK(ctx context.Context, botID uuid.UUID, groupChatID int64, result *sessionapp.MoveResult, bot *botdomain.Bot) {
+	session := result.Session
+
+	if session.Status == sessiondomain.StatusFinished {
+		var winnerName string
+		for _, ev := range result.Events {
+			if ev.Type == "GAME_OVER" {
+				if id, ok := ev.Payload["winner_id"].(float64); ok {
+					winnerName = playerDisplayName(session, int64(id))
+				}
+			}
+		}
+		if winnerName == "" {
+			winnerName = "Someone"
+		}
+		text := skGameOverText(winnerName) + "\n\nFinal scores:\n" + finalScores(session)
+		if msgID, err := h.gameMsgStore.Get(ctx, botID, groupChatID); err == nil {
+			h.childEditMessage(ctx, bot, groupChatID, msgID, text, nil)
+			_ = h.gameMsgStore.Delete(ctx, botID, groupChatID)
+		}
+		_ = h.chatIndex.Delete(ctx, botID, groupChatID)
+		return
+	}
+
+	state, err := parseSKState(session.State)
+	if err != nil {
+		return
+	}
+
+	var prefix string
+	for _, ev := range result.Events {
+		switch ev.Type {
+		case "WORD_REJECTED":
+			if id, ok := ev.Payload["player_id"].(float64); ok {
+				name := playerDisplayName(session, int64(id))
+				reason, _ := ev.Payload["reason"].(string)
+				prefix += fmt.Sprintf("❌ %s's word rejected: %s\n", name, reason)
+			}
+		case "PLAYER_ELIMINATED":
+			if id, ok := ev.Payload["player_id"].(float64); ok {
+				name := playerDisplayName(session, int64(id))
+				prefix += fmt.Sprintf("🚫 %s eliminated!\n", name)
+			}
+		}
+	}
+
+	currentPlayerID := state.PlayerOrder[state.CurrentTurnIdx]
+	playerName := playerDisplayName(session, currentPlayerID)
+	text := prefix + skTurnText(playerName, state.LastWord)
+	if msgID, err := h.gameMsgStore.Get(ctx, botID, groupChatID); err == nil {
+		h.childEditMessage(ctx, bot, groupChatID, msgID, text, nil)
+	}
+}
+
+// ── Truth or Date advance ─────────────────────────────────────────────────────
+
+func (h *ChildBotHandler) advanceTurnTD(ctx context.Context, botID uuid.UUID, groupChatID int64, result *sessionapp.MoveResult, bot *botdomain.Bot) {
+	session := result.Session
+	state, err := parseTDState(session.State)
+	if err != nil {
+		return
+	}
+	currentPlayerID := state.PlayerOrder[state.CurrentTurnIdx]
+	playerName := playerDisplayName(session, currentPlayerID)
+	text := tdTurnText(playerName, state.Round)
+	kb := tdChoiceKeyboard()
+	if msgID, err := h.gameMsgStore.Get(ctx, botID, groupChatID); err == nil {
+		h.childEditMessage(ctx, bot, groupChatID, msgID, text, &kb)
+	}
+}
+
+// ── Sambung Kata / Truth or Date state parsers ────────────────────────────────
+
+func parseSKState(raw json.RawMessage) (sambungkata.State, error) {
+	var s sambungkata.State
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return sambungkata.State{}, fmt.Errorf("parse sk state: %w", err)
+	}
+	return s, nil
+}
+
+func parseTDState(raw json.RawMessage) (truthordate.State, error) {
+	var s truthordate.State
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return truthordate.State{}, fmt.Errorf("parse td state: %w", err)
+	}
+	return s, nil
 }
 
 // ── Uno state helpers ─────────────────────────────────────────────────────────
