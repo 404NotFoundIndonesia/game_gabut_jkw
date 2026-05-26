@@ -96,7 +96,7 @@ func unoInlineResults(hand []uno.Card, top uno.Card, stickerMap UnoStickerMap) [
 		}
 
 		fileID := stickerMap[unoCardKey(card)]
-		if fileID != "" {
+		if len(fileID) > 20 {
 			results = append(results, telegram.InlineQueryResult{
 				Type:          "sticker",
 				ID:            fmt.Sprintf("play:%d", i),
