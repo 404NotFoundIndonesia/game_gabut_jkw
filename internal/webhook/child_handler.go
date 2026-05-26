@@ -111,31 +111,40 @@ func (h *ChildBotHandler) handleUpdate(c *fiber.Ctx) error {
 		slog.Error("child handler: body parse failed", "bot_id", botID, "err", err)
 		return c.SendStatus(fiber.StatusOK)
 	}
-	if update.Message == nil || update.Message.From == nil {
-		slog.Info("child handler: non-message update, skipping", "bot_id", botID)
-		return c.SendStatus(fiber.StatusOK)
-	}
 
 	ctx := c.Context()
-	userID := update.Message.From.ID
-	displayName := update.Message.From.FirstName
-	if update.Message.From.LastName != "" {
-		displayName += " " + update.Message.From.LastName
+
+	switch {
+	case update.Message != nil && update.Message.From != nil:
+		h.handleMessage(ctx, botID, bot, update.Message)
+	case update.CallbackQuery != nil:
+		h.handleCallbackQuery(ctx, botID, bot, update.CallbackQuery)
+	default:
+		slog.Info("child handler: non-actionable update, skipping", "bot_id", botID)
 	}
-	chatID := update.Message.Chat.ID
-	text := strings.TrimSpace(update.Message.Text)
+	return c.SendStatus(fiber.StatusOK)
+}
+
+func (h *ChildBotHandler) handleMessage(ctx context.Context, botID uuid.UUID, bot *botdomain.Bot, msg *telegram.Message) {
+	userID := msg.From.ID
+	displayName := msg.From.FirstName
+	if msg.From.LastName != "" {
+		displayName += " " + msg.From.LastName
+	}
+	chatID := msg.Chat.ID
+	text := strings.TrimSpace(msg.Text)
 
 	slog.Info("child handler: message received", "bot_id", botID, "chat_id", chatID, "user_id", userID, "text", text)
 
 	if !strings.HasPrefix(text, "/") {
-		return c.SendStatus(fiber.StatusOK)
+		return
 	}
 
 	cmd, args := parseCommand(text)
 	slog.Info("child handler: dispatching command", "bot_id", botID, "cmd", cmd)
 	switch cmd {
 	case "/newgame":
-		h.cmdNewGame(ctx, botID, chatID, userID, displayName, args, bot)
+		h.cmdNewGame(ctx, botID, chatID, userID, displayName, bot)
 	case "/join":
 		h.cmdJoin(ctx, botID, chatID, userID, displayName, bot)
 	case "/start":
@@ -149,22 +158,85 @@ func (h *ChildBotHandler) handleUpdate(c *fiber.Ctx) error {
 	default:
 		h.childReply(ctx, bot, chatID, childHelpText())
 	}
-	return c.SendStatus(fiber.StatusOK)
+}
+
+func (h *ChildBotHandler) handleCallbackQuery(ctx context.Context, botID uuid.UUID, bot *botdomain.Bot, cq *telegram.CallbackQuery) {
+	_ = h.childAnswerCallback(ctx, bot, cq.ID)
+
+	if cq.Message == nil || cq.From == nil {
+		return
+	}
+
+	chatID := cq.Message.Chat.ID
+	msgID := cq.Message.MessageID
+	userID := cq.From.ID
+	displayName := cq.From.FirstName
+	if cq.From.LastName != "" {
+		displayName += " " + cq.From.LastName
+	}
+
+	if strings.HasPrefix(cq.Data, "cng:") {
+		h.cbNewGame(ctx, botID, chatID, msgID, userID, displayName, cq.Data[4:], bot)
+	}
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-func (h *ChildBotHandler) cmdNewGame(ctx context.Context, botID uuid.UUID, chatID, userID int64, displayName string, args []string, bot *botdomain.Bot) {
-	if len(args) == 0 {
-		h.childReply(ctx, bot, chatID, "Usage: /newgame <game_slug>\nSlugs: uno, sambung_kata, truth_or_date")
+func (h *ChildBotHandler) cmdNewGame(ctx context.Context, botID uuid.UUID, chatID, userID int64, displayName string, bot *botdomain.Bot) {
+	bgs, err := h.gameSvc.ListBotGames(ctx, botID)
+	if err != nil {
+		h.childReply(ctx, bot, chatID, "❌ "+extractMsg(err))
 		return
 	}
-	game, err := h.gameSvc.GetGameBySlug(ctx, gamedomain.GameSlug(args[0]))
-	if err != nil {
-		h.childReply(ctx, bot, chatID, "❌ Unknown game slug. Try: uno, sambung_kata, truth_or_date")
+	if len(bgs) == 0 {
+		h.childReply(ctx, bot, chatID, "No games assigned to this bot yet.")
 		return
 	}
 
+	// Single game → create session immediately.
+	if len(bgs) == 1 {
+		h.createSession(ctx, botID, chatID, userID, displayName, bgs[0].Game, bot)
+		return
+	}
+
+	// Multiple games → let user pick.
+	var rows [][]telegram.InlineKeyboardButton
+	for _, bg := range bgs {
+		label := gameLabel(string(bg.Game.Slug))
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			{Text: label, CallbackData: "cng:" + string(bg.Game.Slug)},
+		})
+	}
+	h.childSendWithKeyboard(ctx, bot, chatID, "Choose a game:", telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (h *ChildBotHandler) cbNewGame(ctx context.Context, botID uuid.UUID, chatID, msgID, userID int64, displayName, slug string, bot *botdomain.Bot) {
+	game, err := h.gameSvc.GetGameBySlug(ctx, gamedomain.GameSlug(slug))
+	if err != nil {
+		h.childEditMessage(ctx, bot, chatID, msgID, "❌ Unknown game.", nil)
+		return
+	}
+
+	session, err := h.sessionSvc.CreateSession(ctx, botID, sessionapp.CreateSessionRequest{
+		GameID:         game.ID,
+		ChatID:         chatID,
+		TelegramUserID: userID,
+		DisplayName:    displayName,
+	})
+	if err != nil {
+		h.childEditMessage(ctx, bot, chatID, msgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+
+	_ = h.chatIndex.Set(ctx, botID, chatID, session.ID, h.sessionTTL)
+	h.childEditMessage(ctx, bot, chatID, msgID, fmt.Sprintf(
+		"🎮 Game %q created!\nHost: %s\nOthers: send /join to play.\nHost: send /start when ready.",
+		game.Slug, displayName,
+	), nil)
+}
+
+// createSession is the shared helper used by cmdNewGame (single-game path) and cbNewGame.
+func (h *ChildBotHandler) createSession(ctx context.Context, botID uuid.UUID, chatID, userID int64, displayName string, game *gamedomain.Game, bot *botdomain.Bot) {
 	session, err := h.sessionSvc.CreateSession(ctx, botID, sessionapp.CreateSessionRequest{
 		GameID:         game.ID,
 		ChatID:         chatID,
@@ -178,15 +250,15 @@ func (h *ChildBotHandler) cmdNewGame(ctx context.Context, botID uuid.UUID, chatI
 
 	_ = h.chatIndex.Set(ctx, botID, chatID, session.ID, h.sessionTTL)
 	h.childReply(ctx, bot, chatID, fmt.Sprintf(
-		"🎮 Game %q created!\nSession ID: %s\nHost: %s\nOthers: send /join to play.\nHost: send /start when ready.",
-		game.Slug, session.ID, displayName,
+		"🎮 Game %q created!\nHost: %s\nOthers: send /join to play.\nHost: send /start when ready.",
+		game.Slug, displayName,
 	))
 }
 
 func (h *ChildBotHandler) cmdJoin(ctx context.Context, botID uuid.UUID, chatID, userID int64, displayName string, bot *botdomain.Bot) {
 	sessionID, err := h.chatIndex.Get(ctx, botID, chatID)
 	if err != nil {
-		h.childReply(ctx, bot, chatID, "No active game in this chat. Use /newgame <slug> to start one.")
+		h.childReply(ctx, bot, chatID, "No active game in this chat. Use /newgame to start one.")
 		return
 	}
 	session, err := h.sessionSvc.JoinSession(ctx, botID, sessionID, sessionapp.JoinRequest{
@@ -288,9 +360,12 @@ func (h *ChildBotHandler) cmdLeaderboardChild(ctx context.Context, botID uuid.UU
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// childReply decrypts the bot token and sends a text message via the child bot's Telegram token.
+func (h *ChildBotHandler) childToken(bot *botdomain.Bot) (string, error) {
+	return h.tokenDecryptor(bot.Token.Ciphertext())
+}
+
 func (h *ChildBotHandler) childReply(ctx context.Context, bot *botdomain.Bot, chatID int64, text string) {
-	rawToken, err := h.tokenDecryptor(bot.Token.Ciphertext())
+	rawToken, err := h.childToken(bot)
 	if err != nil {
 		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
 		return
@@ -301,10 +376,54 @@ func (h *ChildBotHandler) childReply(ctx context.Context, bot *botdomain.Bot, ch
 	}
 }
 
+func (h *ChildBotHandler) childSendWithKeyboard(ctx context.Context, bot *botdomain.Bot, chatID int64, text string, kb telegram.InlineKeyboardMarkup) {
+	rawToken, err := h.childToken(bot)
+	if err != nil {
+		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
+		return
+	}
+	if err := h.tgClient.SendMessageWithKeyboard(ctx, rawToken, chatID, text, kb); err != nil {
+		slog.Error("child handler: send keyboard failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
+	}
+}
+
+func (h *ChildBotHandler) childEditMessage(ctx context.Context, bot *botdomain.Bot, chatID, msgID int64, text string, kb *telegram.InlineKeyboardMarkup) {
+	rawToken, err := h.childToken(bot)
+	if err != nil {
+		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
+		return
+	}
+	if err := h.tgClient.EditMessageText(ctx, rawToken, chatID, msgID, text, kb); err != nil {
+		slog.Error("child handler: edit message failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
+	}
+}
+
+func (h *ChildBotHandler) childAnswerCallback(ctx context.Context, bot *botdomain.Bot, callbackQueryID string) error {
+	rawToken, err := h.childToken(bot)
+	if err != nil {
+		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
+		return err
+	}
+	return h.tgClient.AnswerCallbackQuery(ctx, rawToken, callbackQueryID)
+}
+
+func gameLabel(slug string) string {
+	switch slug {
+	case "uno":
+		return "🃏 Uno"
+	case "sambung_kata":
+		return "📝 Sambung Kata"
+	case "truth_or_date":
+		return "🎯 Truth or Date"
+	default:
+		return slug
+	}
+}
+
 func childHelpText() string {
 	return `Available commands:
 
-/newgame <slug> — start a new game (slug: uno, sambung_kata, truth_or_date)
+/newgame — start a new game
 /join — join the active game in this chat
 /start — start the game (host only)
 /move <payload> — submit a move (JSON or "action value")

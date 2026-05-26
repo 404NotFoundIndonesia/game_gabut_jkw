@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	botdomain "github.com/404NFIDv2/bot-game-management/internal/bot/domain"
+	gamedomain "github.com/404NFIDv2/bot-game-management/internal/game/domain"
 	lbdomain "github.com/404NFIDv2/bot-game-management/internal/leaderboard/domain"
 	"github.com/404NFIDv2/bot-game-management/internal/games"
 	sessionapp "github.com/404NFIDv2/bot-game-management/internal/session/application"
@@ -200,61 +201,127 @@ func TestChildHandler_NonCommandText_Ignored(t *testing.T) {
 	}
 }
 
-func TestChildHandler_NewGame_MissingSlug(t *testing.T) {
+func TestChildHandler_NewGame_NoGames(t *testing.T) {
 	tg := &stubTGClient{}
 	app, botID := newChildApp(
 		&stubChildBotLookup{bot: activeBot()},
 		&stubChildSessionSvc{},
-		&stubMainGameSvc{},
+		&stubMainGameSvc{}, // botGames nil → "No games assigned"
 		&stubChildLbSvc{},
 		newStubChatIndex(),
 		tg,
 	)
 	postChildUpdate(t, app, botID, makeChildUpdate(111, "Alice", "/newgame"))
 	if tg.sendCalled == 0 {
-		t.Error("expected usage hint reply")
+		t.Error("expected reply when no games assigned")
 	}
-	if !contains(tg.lastMessage, "Usage") {
-		t.Errorf("expected usage hint, got %q", tg.lastMessage)
+	if !contains(tg.lastMessage, "No games assigned") {
+		t.Errorf("expected no-games reply, got %q", tg.lastMessage)
 	}
 }
 
-func TestChildHandler_NewGame_UnknownSlug(t *testing.T) {
+func TestChildHandler_NewGame_ListGamesError(t *testing.T) {
 	tg := &stubTGClient{}
 	app, botID := newChildApp(
 		&stubChildBotLookup{bot: activeBot()},
 		&stubChildSessionSvc{},
-		&stubMainGameSvc{err: apperrors.NotFound("game")},
+		&stubMainGameSvc{err: apperrors.Internal("db error")},
 		&stubChildLbSvc{},
 		newStubChatIndex(),
 		tg,
 	)
-	postChildUpdate(t, app, botID, makeChildUpdate(111, "Alice", "/newgame badslug"))
+	postChildUpdate(t, app, botID, makeChildUpdate(111, "Alice", "/newgame"))
 	if !contains(tg.lastMessage, "❌") {
 		t.Errorf("expected error reply, got %q", tg.lastMessage)
 	}
 }
 
-func TestChildHandler_NewGame_Success(t *testing.T) {
+func TestChildHandler_NewGame_SingleGame_ImmediateSession(t *testing.T) {
 	bid := uuid.New()
 	sess := activeSession(bid)
 	tg := &stubTGClient{}
 	chatIndex := newStubChatIndex()
+	gameID := uuid.New()
+	botGames := []*gamedomain.BotGame{
+		{BotID: bid, GameID: gameID, Game: &gamedomain.Game{ID: gameID, Slug: "uno", Name: "Uno"}},
+	}
 	app, botID := newChildApp(
 		&stubChildBotLookup{bot: activeBot()},
 		&stubChildSessionSvc{session: sess},
-		&stubMainGameSvc{},
+		&stubMainGameSvc{botGames: botGames},
 		&stubChildLbSvc{},
 		chatIndex,
 		tg,
 	)
-	postChildUpdate(t, app, botID, makeChildUpdate(111, "Alice", "/newgame uno"))
+	postChildUpdate(t, app, botID, makeChildUpdate(111, "Alice", "/newgame"))
 	if !contains(tg.lastMessage, "created") {
 		t.Errorf("expected creation confirmation, got %q", tg.lastMessage)
 	}
-	// chatIndex must be populated
 	if _, err := chatIndex.Get(context.Background(), botID, 111); err != nil {
 		t.Errorf("chatIndex not set after /newgame: %v", err)
+	}
+}
+
+func TestChildHandler_NewGame_MultipleGames_ShowsKeyboard(t *testing.T) {
+	bid := uuid.New()
+	tg := &stubTGClient{}
+	botGames := []*gamedomain.BotGame{
+		{BotID: bid, GameID: uuid.New(), Game: &gamedomain.Game{ID: uuid.New(), Slug: "uno", Name: "Uno"}},
+		{BotID: bid, GameID: uuid.New(), Game: &gamedomain.Game{ID: uuid.New(), Slug: "sambung_kata", Name: "Sambung Kata"}},
+	}
+	app, botID := newChildApp(
+		&stubChildBotLookup{bot: activeBot()},
+		&stubChildSessionSvc{},
+		&stubMainGameSvc{botGames: botGames},
+		&stubChildLbSvc{},
+		newStubChatIndex(),
+		tg,
+	)
+	postChildUpdate(t, app, botID, makeChildUpdate(111, "Alice", "/newgame"))
+	if !contains(tg.lastMessage, "Choose a game") {
+		t.Errorf("expected game-selection keyboard, got %q", tg.lastMessage)
+	}
+}
+
+func TestChildHandler_NewGame_Callback_Success(t *testing.T) {
+	bid := uuid.New()
+	sess := activeSession(bid)
+	tg := &stubTGClient{}
+	chatIndex := newStubChatIndex()
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	h := webhook.NewChildBotHandler(
+		&stubChildBotLookup{bot: activeBot()},
+		&stubChildSessionSvc{session: sess},
+		&stubMainGameSvc{}, // GetGameBySlug returns a game when err==nil
+		&stubChildLbSvc{},
+		chatIndex,
+		tg,
+		noopDecryptor,
+		30*time.Minute,
+	)
+	h.RegisterRoutes(app)
+
+	update := telegram.Update{
+		CallbackQuery: &telegram.CallbackQuery{
+			ID:   "cq1",
+			From: &telegram.User{ID: 111, FirstName: "Alice"},
+			Message: &telegram.Message{
+				MessageID: 10,
+				Chat:      &telegram.Chat{ID: 111},
+			},
+			Data: "cng:uno",
+		},
+	}
+	b, _ := json.Marshal(update)
+	req := httptest.NewRequest(http.MethodPost, "/telegram/child/"+bid.String()+"/webhook", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	_, _ = app.Test(req, -1)
+
+	if !contains(tg.lastMessage, "created") {
+		t.Errorf("expected session created reply via callback, got %q", tg.lastMessage)
+	}
+	if _, err := chatIndex.Get(context.Background(), bid, 111); err != nil {
+		t.Errorf("chatIndex not set after callback: %v", err)
 	}
 }
 
