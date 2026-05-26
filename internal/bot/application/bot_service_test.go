@@ -109,7 +109,16 @@ func (f *fakeTGClient) GetWebhookInfo(_ context.Context, _ string) (telegram.Web
 func (f *fakeTGClient) SendMessageWithKeyboard(_ context.Context, _ string, _ int64, _ string, _ telegram.InlineKeyboardMarkup) error {
 	return f.err
 }
+func (f *fakeTGClient) SendMessageGetID(_ context.Context, _ string, _ int64, _ string, _ telegram.InlineKeyboardMarkup) (int64, error) {
+	return 0, f.err
+}
+func (f *fakeTGClient) SendSticker(_ context.Context, _ string, _ int64, _ string, _ *telegram.InlineKeyboardMarkup) error {
+	return f.err
+}
 func (f *fakeTGClient) AnswerCallbackQuery(_ context.Context, _, _ string) error { return f.err }
+func (f *fakeTGClient) AnswerCallbackQueryAlert(_ context.Context, _, _, _ string) error {
+	return f.err
+}
 func (f *fakeTGClient) EditMessageText(_ context.Context, _ string, _, _ int64, _ string, _ *telegram.InlineKeyboardMarkup) error {
 	return f.err
 }
@@ -302,7 +311,16 @@ func (f *fakeTGClientWithWebhook) SendMessage(_ context.Context, _ string, _ int
 func (f *fakeTGClientWithWebhook) SendMessageWithKeyboard(_ context.Context, _ string, _ int64, _ string, _ telegram.InlineKeyboardMarkup) error {
 	return nil
 }
+func (f *fakeTGClientWithWebhook) SendMessageGetID(_ context.Context, _ string, _ int64, _ string, _ telegram.InlineKeyboardMarkup) (int64, error) {
+	return 0, nil
+}
+func (f *fakeTGClientWithWebhook) SendSticker(_ context.Context, _ string, _ int64, _ string, _ *telegram.InlineKeyboardMarkup) error {
+	return nil
+}
 func (f *fakeTGClientWithWebhook) AnswerCallbackQuery(_ context.Context, _, _ string) error {
+	return nil
+}
+func (f *fakeTGClientWithWebhook) AnswerCallbackQueryAlert(_ context.Context, _, _, _ string) error {
 	return nil
 }
 func (f *fakeTGClientWithWebhook) EditMessageText(_ context.Context, _ string, _, _ int64, _ string, _ *telegram.InlineKeyboardMarkup) error {

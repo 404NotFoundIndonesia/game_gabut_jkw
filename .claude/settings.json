@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -n '180,200p' /Users/iqbaleff214/Projects/404NFIDv2/game_gabut_jkw/internal/webhook/child_handler_test.go)",
+      "Bash(sed -n '342,360p' /Users/iqbaleff214/Projects/404NFIDv2/game_gabut_jkw/internal/webhook/child_handler_test.go)"
+    ]
+  }
+}

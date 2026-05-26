@@ -189,10 +189,36 @@ func main() {
 	tokenDecryptor := webhook.TokenDecryptor(func(ciphertext string) (string, error) {
 		return crypto.Decrypt(cryptoKey, ciphertext)
 	})
+	turnStore := webhook.NewRedisTurnStore(redisClient)
+	gameMsgStore := webhook.NewRedisGameMsgStore(redisClient)
 	webhook.NewChildBotHandler(
 		botRepo, sessionSvc, botGameSvc, lbSvc,
-		chatIndex, tgClient,
-		tokenDecryptor,
+		chatIndex, turnStore, gameMsgStore,
+		tgClient, tokenDecryptor,
+		webhook.UnoStickerMap{
+			// Keys: "{color}_{value}" — values: Telegram sticker file_id strings.
+			// Color: red | green | blue | yellow | wild
+			// Value: 0-9 | skip | reverse | draw_two | wild | wild_draw_four
+			//
+			// Examples (replace with your actual sticker pack file_ids):
+			// "red_0":             "CAACAgIAAxkBAAI...",
+			// "red_1":             "CAACAgIAAxkBAAI...",
+			// "red_2":             "CAACAgIAAxkBAAI...",
+			// "red_3":             "CAACAgIAAxkBAAI...",
+			// "red_4":             "CAACAgIAAxkBAAI...",
+			// "red_5":             "CAACAgIAAxkBAAI...",
+			// "red_6":             "CAACAgIAAxkBAAI...",
+			// "red_7":             "CAACAgIAAxkBAAI...",
+			// "red_8":             "CAACAgIAAxkBAAI...",
+			// "red_9":             "CAACAgIAAxkBAAI...",
+			// "red_skip":          "CAACAgIAAxkBAAI...",
+			// "red_reverse":       "CAACAgIAAxkBAAI...",
+			// "red_draw_two":      "CAACAgIAAxkBAAI...",
+			// "green_0":           "CAACAgIAAxkBAAI...",
+			// ... (repeat for green, blue, yellow)
+			// "wild_wild":         "CAACAgIAAxkBAAI...",
+			// "wild_wild_draw_four": "CAACAgIAAxkBAAI...",
+		},
 		time.Duration(cfg.SessionTTLHours)*time.Hour,
 	).RegisterRoutes(tgGroup)
 

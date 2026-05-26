@@ -61,6 +61,12 @@ func (s *stubMainGameSvc) AssignGame(_ context.Context, _, _ uuid.UUID) (*gamedo
 	return &gamedomain.BotGame{}, s.err
 }
 func (s *stubMainGameSvc) RemoveGame(_ context.Context, _, _ uuid.UUID) error { return s.err }
+func (s *stubMainGameSvc) GetGame(_ context.Context, id uuid.UUID) (*gamedomain.Game, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &gamedomain.Game{ID: id, Slug: "uno", Name: "Uno"}, nil
+}
 func (s *stubMainGameSvc) GetGameBySlug(_ context.Context, slug gamedomain.GameSlug) (*gamedomain.Game, error) {
 	if s.err != nil {
 		return nil, s.err
@@ -109,7 +115,19 @@ func (s *stubTGClient) SendMessageWithKeyboard(_ context.Context, _ string, _ in
 	s.lastMessage = text
 	return nil
 }
+func (s *stubTGClient) SendMessageGetID(_ context.Context, _ string, _ int64, text string, _ telegram.InlineKeyboardMarkup) (int64, error) {
+	s.sendCalled++
+	s.lastMessage = text
+	return 1, nil
+}
+func (s *stubTGClient) SendSticker(_ context.Context, _ string, _ int64, _ string, _ *telegram.InlineKeyboardMarkup) error {
+	s.sendCalled++
+	return nil
+}
 func (s *stubTGClient) AnswerCallbackQuery(_ context.Context, _, _ string) error { return nil }
+func (s *stubTGClient) AnswerCallbackQueryAlert(_ context.Context, _, _, _ string) error {
+	return nil
+}
 func (s *stubTGClient) EditMessageText(_ context.Context, _ string, _, _ int64, text string, _ *telegram.InlineKeyboardMarkup) error {
 	s.sendCalled++
 	s.lastMessage = text

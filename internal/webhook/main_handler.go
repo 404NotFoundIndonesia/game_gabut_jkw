@@ -35,6 +35,7 @@ type MainGameSvc interface {
 	ListBotGames(ctx context.Context, botID uuid.UUID) ([]*gamedomain.BotGame, error)
 	AssignGame(ctx context.Context, botID, gameID uuid.UUID) (*gamedomain.BotGame, error)
 	RemoveGame(ctx context.Context, botID, gameID uuid.UUID) error
+	GetGame(ctx context.Context, id uuid.UUID) (*gamedomain.Game, error)
 	GetGameBySlug(ctx context.Context, slug gamedomain.GameSlug) (*gamedomain.Game, error)
 }
 

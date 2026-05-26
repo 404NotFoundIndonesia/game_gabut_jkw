@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	botdomain "github.com/404NFIDv2/bot-game-management/internal/bot/domain"
 	gamedomain "github.com/404NFIDv2/bot-game-management/internal/game/domain"
+	"github.com/404NFIDv2/bot-game-management/internal/games/uno"
 	lbdomain "github.com/404NFIDv2/bot-game-management/internal/leaderboard/domain"
 	sessionapp "github.com/404NFIDv2/bot-game-management/internal/session/application"
 	sessiondomain "github.com/404NFIDv2/bot-game-management/internal/session/domain"
@@ -32,6 +34,7 @@ type ChildSessionSvc interface {
 	CreateSession(ctx context.Context, botID uuid.UUID, req sessionapp.CreateSessionRequest) (*sessiondomain.GameSession, error)
 	JoinSession(ctx context.Context, botID, sessionID uuid.UUID, req sessionapp.JoinRequest) (*sessiondomain.GameSession, error)
 	StartSession(ctx context.Context, botID, sessionID uuid.UUID, callerTelegramID int64) (*sessiondomain.GameSession, error)
+	GetSession(ctx context.Context, botID, sessionID uuid.UUID) (*sessiondomain.GameSession, error)
 	SubmitMove(ctx context.Context, botID, sessionID uuid.UUID, req sessionapp.MoveRequest) (*sessionapp.MoveResult, error)
 	EndSession(ctx context.Context, botID, sessionID uuid.UUID, req sessionapp.EndSessionRequest) (*sessiondomain.GameSession, error)
 }
@@ -50,11 +53,14 @@ type TokenDecryptor func(ciphertext string) (string, error)
 type ChildBotHandler struct {
 	botRepo        ChildBotLookup
 	sessionSvc     ChildSessionSvc
-	gameSvc        MainGameSvc // reuses the same interface defined in main_handler.go
+	gameSvc        MainGameSvc
 	lbSvc          ChildLeaderboardSvc
 	chatIndex      ChatSessionIndex
+	turnStore      TurnStore
+	gameMsgStore   GameMsgStore
 	tgClient       telegram.Client
 	tokenDecryptor TokenDecryptor
+	stickerMap     UnoStickerMap
 	sessionTTL     time.Duration
 }
 
@@ -65,8 +71,11 @@ func NewChildBotHandler(
 	gameSvc MainGameSvc,
 	lbSvc ChildLeaderboardSvc,
 	chatIndex ChatSessionIndex,
+	turnStore TurnStore,
+	gameMsgStore GameMsgStore,
 	tgClient telegram.Client,
 	tokenDecryptor TokenDecryptor,
+	stickerMap UnoStickerMap,
 	sessionTTL time.Duration,
 ) *ChildBotHandler {
 	return &ChildBotHandler{
@@ -75,8 +84,11 @@ func NewChildBotHandler(
 		gameSvc:        gameSvc,
 		lbSvc:          lbSvc,
 		chatIndex:      chatIndex,
+		turnStore:      turnStore,
+		gameMsgStore:   gameMsgStore,
 		tgClient:       tgClient,
 		tokenDecryptor: tokenDecryptor,
+		stickerMap:     stickerMap,
 		sessionTTL:     sessionTTL,
 	}
 }
@@ -113,7 +125,6 @@ func (h *ChildBotHandler) handleUpdate(c *fiber.Ctx) error {
 	}
 
 	ctx := c.Context()
-
 	switch {
 	case update.Message != nil && update.Message.From != nil:
 		h.handleMessage(ctx, botID, bot, update.Message)
@@ -125,6 +136,8 @@ func (h *ChildBotHandler) handleUpdate(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusOK)
 }
 
+// ── Message dispatcher ────────────────────────────────────────────────────────
+
 func (h *ChildBotHandler) handleMessage(ctx context.Context, botID uuid.UUID, bot *botdomain.Bot, msg *telegram.Message) {
 	userID := msg.From.ID
 	displayName := msg.From.FirstName
@@ -132,9 +145,9 @@ func (h *ChildBotHandler) handleMessage(ctx context.Context, botID uuid.UUID, bo
 		displayName += " " + msg.From.LastName
 	}
 	chatID := msg.Chat.ID
+	chatType := msg.Chat.Type
 	text := strings.TrimSpace(msg.Text)
 
-	chatType := msg.Chat.Type
 	slog.Info("child handler: message received", "bot_id", botID, "chat_id", chatID, "user_id", userID, "text", text, "chat_type", chatType)
 
 	if !strings.HasPrefix(text, "/") {
@@ -163,9 +176,9 @@ func (h *ChildBotHandler) handleMessage(ctx context.Context, botID uuid.UUID, bo
 	}
 }
 
-func (h *ChildBotHandler) handleCallbackQuery(ctx context.Context, botID uuid.UUID, bot *botdomain.Bot, cq *telegram.CallbackQuery) {
-	_ = h.childAnswerCallback(ctx, bot, cq.ID)
+// ── Callback dispatcher ───────────────────────────────────────────────────────
 
+func (h *ChildBotHandler) handleCallbackQuery(ctx context.Context, botID uuid.UUID, bot *botdomain.Bot, cq *telegram.CallbackQuery) {
 	if cq.Message == nil || cq.From == nil {
 		return
 	}
@@ -177,9 +190,23 @@ func (h *ChildBotHandler) handleCallbackQuery(ctx context.Context, botID uuid.UU
 	if cq.From.LastName != "" {
 		displayName += " " + cq.From.LastName
 	}
+	data := cq.Data
 
-	if strings.HasPrefix(cq.Data, "cng:") {
-		h.cbNewGame(ctx, botID, chatID, msgID, userID, displayName, cq.Data[4:], bot)
+	slog.Info("child handler: callback", "bot_id", botID, "data", data, "user_id", userID)
+
+	switch {
+	case data == "vhand":
+		h.cbViewHand(ctx, botID, chatID, msgID, userID, cq.ID, bot)
+	case strings.HasPrefix(data, "uplay:"):
+		h.cbPlayCard(ctx, botID, userID, cq.ID, data[6:], bot)
+	case data == "udraw":
+		h.cbDraw(ctx, botID, userID, cq.ID, bot)
+	case strings.HasPrefix(data, "uwild:"):
+		h.cbWildSelect(ctx, botID, chatID, msgID, userID, cq.ID, data[6:], bot)
+	case strings.HasPrefix(data, "ucolor:"):
+		h.cbWildColor(ctx, botID, chatID, msgID, userID, cq.ID, data[7:], bot)
+	case strings.HasPrefix(data, "cng:"):
+		h.cbNewGame(ctx, botID, chatID, msgID, userID, displayName, data[4:], bot)
 	}
 }
 
@@ -195,19 +222,14 @@ func (h *ChildBotHandler) cmdNewGame(ctx context.Context, botID uuid.UUID, chatI
 		h.childReply(ctx, bot, chatID, "No games assigned to this bot yet.")
 		return
 	}
-
-	// Single game → create session immediately.
 	if len(bgs) == 1 {
 		h.createSession(ctx, botID, chatID, userID, displayName, bgs[0].Game, bot)
 		return
 	}
-
-	// Multiple games → let user pick.
 	var rows [][]telegram.InlineKeyboardButton
 	for _, bg := range bgs {
-		label := gameLabel(string(bg.Game.Slug))
 		rows = append(rows, []telegram.InlineKeyboardButton{
-			{Text: label, CallbackData: "cng:" + string(bg.Game.Slug)},
+			{Text: gameLabel(string(bg.Game.Slug)), CallbackData: "cng:" + string(bg.Game.Slug)},
 		})
 	}
 	h.childSendWithKeyboard(ctx, bot, chatID, "Choose a game:", telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
@@ -219,7 +241,6 @@ func (h *ChildBotHandler) cbNewGame(ctx context.Context, botID uuid.UUID, chatID
 		h.childEditMessage(ctx, bot, chatID, msgID, "❌ Unknown game.", nil)
 		return
 	}
-
 	session, err := h.sessionSvc.CreateSession(ctx, botID, sessionapp.CreateSessionRequest{
 		GameID:         game.ID,
 		ChatID:         chatID,
@@ -230,7 +251,6 @@ func (h *ChildBotHandler) cbNewGame(ctx context.Context, botID uuid.UUID, chatID
 		h.childEditMessage(ctx, bot, chatID, msgID, "❌ "+extractMsg(err), nil)
 		return
 	}
-
 	_ = h.chatIndex.Set(ctx, botID, chatID, session.ID, h.sessionTTL)
 	h.childEditMessage(ctx, bot, chatID, msgID, fmt.Sprintf(
 		"🎮 Game %q created!\nHost: %s\nOthers: send /join to play.\nHost: send /start when ready.",
@@ -238,7 +258,6 @@ func (h *ChildBotHandler) cbNewGame(ctx context.Context, botID uuid.UUID, chatID
 	), nil)
 }
 
-// createSession is the shared helper used by cmdNewGame (single-game path) and cbNewGame.
 func (h *ChildBotHandler) createSession(ctx context.Context, botID uuid.UUID, chatID, userID int64, displayName string, game *gamedomain.Game, bot *botdomain.Bot) {
 	session, err := h.sessionSvc.CreateSession(ctx, botID, sessionapp.CreateSessionRequest{
 		GameID:         game.ID,
@@ -250,7 +269,6 @@ func (h *ChildBotHandler) createSession(ctx context.Context, botID uuid.UUID, ch
 		h.childReply(ctx, bot, chatID, "❌ "+extractMsg(err))
 		return
 	}
-
 	_ = h.chatIndex.Set(ctx, botID, chatID, session.ID, h.sessionTTL)
 	h.childReply(ctx, bot, chatID, fmt.Sprintf(
 		"🎮 Game %q created!\nHost: %s\nOthers: send /join to play.\nHost: send /start when ready.",
@@ -281,11 +299,30 @@ func (h *ChildBotHandler) cmdStart(ctx context.Context, botID uuid.UUID, chatID,
 		h.childReply(ctx, bot, chatID, "No active game in this chat.")
 		return
 	}
-	if _, err := h.sessionSvc.StartSession(ctx, botID, sessionID, userID); err != nil {
+	session, err := h.sessionSvc.StartSession(ctx, botID, sessionID, userID)
+	if err != nil {
 		h.childReply(ctx, bot, chatID, "❌ "+extractMsg(err))
 		return
 	}
-	h.childReply(ctx, bot, chatID, "🎮 Game started! Submit moves with /move <payload>")
+
+	game, err := h.gameSvc.GetGame(ctx, session.GameID)
+	if err != nil || game.Slug != gamedomain.SlugUno {
+		h.childReply(ctx, bot, chatID, "🎮 Game started! Submit moves with /move <payload>")
+		return
+	}
+
+	// Uno: send turn announcement and store game message ID.
+	state, err := parseUnoState(session.State)
+	if err != nil {
+		h.childReply(ctx, bot, chatID, "🎮 Game started!")
+		return
+	}
+	playerName := playerDisplayName(session, state.PlayerOrder[state.CurrentTurnIdx])
+	text := unoTurnText(state.DiscardPile[len(state.DiscardPile)-1], playerName, len(state.Hands[state.PlayerOrder[state.CurrentTurnIdx]]))
+	msgID, err := h.childSendGetID(ctx, bot, chatID, text, unoViewHandKeyboard)
+	if err == nil {
+		_ = h.gameMsgStore.Set(ctx, botID, chatID, msgID, h.sessionTTL)
+	}
 }
 
 func (h *ChildBotHandler) cmdMove(ctx context.Context, botID uuid.UUID, chatID, userID int64, args []string, bot *botdomain.Bot) {
@@ -349,7 +386,14 @@ func (h *ChildBotHandler) cmdEnd(ctx context.Context, botID uuid.UUID, chatID, u
 	for _, p := range session.Players {
 		fmt.Fprintf(&sb, "• %s: %d\n", p.DisplayName, p.Score)
 	}
-	h.childReply(ctx, bot, chatID, sb.String())
+
+	// Edit the turn message to show final result (remove button).
+	if msgID, err := h.gameMsgStore.Get(ctx, botID, chatID); err == nil {
+		h.childEditMessage(ctx, bot, chatID, msgID, sb.String(), nil)
+		_ = h.gameMsgStore.Delete(ctx, botID, chatID)
+	} else {
+		h.childReply(ctx, bot, chatID, sb.String())
+	}
 }
 
 func (h *ChildBotHandler) cmdLeaderboardChild(ctx context.Context, botID uuid.UUID, chatID int64, bot *botdomain.Bot) {
@@ -361,6 +405,255 @@ func (h *ChildBotHandler) cmdLeaderboardChild(ctx context.Context, botID uuid.UU
 	h.childReply(ctx, bot, chatID, "🏆 Leaderboard:\n\n"+formatLeaderboard(lb))
 }
 
+// ── Uno turn callbacks ────────────────────────────────────────────────────────
+
+// cbViewHand is triggered when a player taps "🃏 View my hand" in the group.
+func (h *ChildBotHandler) cbViewHand(ctx context.Context, botID uuid.UUID, groupChatID, groupMsgID, userID int64, callbackID string, bot *botdomain.Bot) {
+	sessionID, err := h.chatIndex.Get(ctx, botID, groupChatID)
+	if err != nil {
+		_ = h.childAnswerCallbackAlert(ctx, bot, callbackID, "No active game in this chat.")
+		return
+	}
+
+	session, err := h.sessionSvc.GetSession(ctx, botID, sessionID)
+	if err != nil {
+		_ = h.childAnswerCallbackAlert(ctx, bot, callbackID, "Could not load session.")
+		return
+	}
+
+	state, err := parseUnoState(session.State)
+	if err != nil {
+		_ = h.childAnswerCallbackAlert(ctx, bot, callbackID, "Game state error.")
+		return
+	}
+
+	if state.PlayerOrder[state.CurrentTurnIdx] != userID {
+		_ = h.childAnswerCallbackAlert(ctx, bot, callbackID, "⏳ Not your turn!")
+		return
+	}
+
+	// Silently ack the callback.
+	_ = h.childAnswerCallback(ctx, bot, callbackID)
+
+	hand := state.Hands[userID]
+	top := state.DiscardPile[len(state.DiscardPile)-1]
+	dmMsgID := h.sendHandDM(ctx, bot, userID, hand, top)
+
+	// Store turn context so DM callbacks can resolve back to the group.
+	_ = h.turnStore.Set(ctx, botID, userID, TurnContext{
+		GroupChatID:     groupChatID,
+		GroupMsgID:      groupMsgID,
+		SessionID:       sessionID,
+		DMKeyboardMsgID: dmMsgID,
+	}, h.sessionTTL)
+}
+
+// cbPlayCard processes a card play from the player's DM.
+func (h *ChildBotHandler) cbPlayCard(ctx context.Context, botID uuid.UUID, userID int64, callbackID, idxStr string, bot *botdomain.Bot) {
+	tc, err := h.turnStore.Get(ctx, botID, userID)
+	if err != nil {
+		_ = h.childAnswerCallbackAlert(ctx, bot, callbackID, "Turn expired. Tap 'View my hand' again.")
+		return
+	}
+
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil {
+		_ = h.childAnswerCallback(ctx, bot, callbackID)
+		return
+	}
+
+	_ = h.childAnswerCallback(ctx, bot, callbackID)
+
+	result, err := h.sessionSvc.SubmitMove(ctx, botID, tc.SessionID, sessionapp.MoveRequest{
+		PlayerID: userID,
+		Payload:  map[string]any{"action": "play_card", "card_index": idx},
+	})
+	if err != nil {
+		h.childEditMessage(ctx, bot, userID, tc.DMKeyboardMsgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+
+	h.childEditMessage(ctx, bot, userID, tc.DMKeyboardMsgID, "✅ Card played!", nil)
+	_ = h.turnStore.Delete(ctx, botID, userID)
+	h.advanceTurn(ctx, botID, tc, result, bot)
+}
+
+// cbDraw processes a draw action from the player's DM.
+func (h *ChildBotHandler) cbDraw(ctx context.Context, botID uuid.UUID, userID int64, callbackID string, bot *botdomain.Bot) {
+	tc, err := h.turnStore.Get(ctx, botID, userID)
+	if err != nil {
+		_ = h.childAnswerCallbackAlert(ctx, bot, callbackID, "Turn expired. Tap 'View my hand' again.")
+		return
+	}
+
+	_ = h.childAnswerCallback(ctx, bot, callbackID)
+
+	result, err := h.sessionSvc.SubmitMove(ctx, botID, tc.SessionID, sessionapp.MoveRequest{
+		PlayerID: userID,
+		Payload:  map[string]any{"action": "draw"},
+	})
+	if err != nil {
+		h.childEditMessage(ctx, bot, userID, tc.DMKeyboardMsgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+
+	h.childEditMessage(ctx, bot, userID, tc.DMKeyboardMsgID, "🃏 Drew a card.", nil)
+	_ = h.turnStore.Delete(ctx, botID, userID)
+	h.advanceTurn(ctx, botID, tc, result, bot)
+}
+
+// cbWildSelect shows the color picker when a wild card is tapped.
+func (h *ChildBotHandler) cbWildSelect(ctx context.Context, botID uuid.UUID, chatID, msgID, userID int64, callbackID, idxStr string, bot *botdomain.Bot) {
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil {
+		_ = h.childAnswerCallback(ctx, bot, callbackID)
+		return
+	}
+	_ = h.childAnswerCallback(ctx, bot, callbackID)
+	kb := unoColorKeyboard(idx)
+	h.childEditMessage(ctx, bot, chatID, msgID, "🌈 Choose a color for your wild card:", &kb)
+}
+
+// cbWildColor finalizes the wild card play after the player picks a color.
+// data format: "<card_idx>:<color>"
+func (h *ChildBotHandler) cbWildColor(ctx context.Context, botID uuid.UUID, chatID, msgID, userID int64, callbackID, data string, bot *botdomain.Bot) {
+	tc, err := h.turnStore.Get(ctx, botID, userID)
+	if err != nil {
+		_ = h.childAnswerCallbackAlert(ctx, bot, callbackID, "Turn expired. Tap 'View my hand' again.")
+		return
+	}
+
+	parts := strings.SplitN(data, ":", 2)
+	if len(parts) != 2 {
+		_ = h.childAnswerCallback(ctx, bot, callbackID)
+		return
+	}
+	idx, err := strconv.Atoi(parts[0])
+	if err != nil {
+		_ = h.childAnswerCallback(ctx, bot, callbackID)
+		return
+	}
+	color := parts[1]
+
+	_ = h.childAnswerCallback(ctx, bot, callbackID)
+
+	result, err := h.sessionSvc.SubmitMove(ctx, botID, tc.SessionID, sessionapp.MoveRequest{
+		PlayerID: userID,
+		Payload: map[string]any{
+			"action":       "play_card",
+			"card_index":   idx,
+			"chosen_color": color,
+		},
+	})
+	if err != nil {
+		h.childEditMessage(ctx, bot, chatID, msgID, "❌ "+extractMsg(err), nil)
+		return
+	}
+
+	colorEmoji := map[string]string{"red": "🔴", "blue": "🔵", "yellow": "🟡", "green": "🟢"}
+	h.childEditMessage(ctx, bot, chatID, msgID, "✅ Wild played! Color: "+colorEmoji[color], nil)
+	_ = h.turnStore.Delete(ctx, botID, userID)
+	h.advanceTurn(ctx, botID, tc, result, bot)
+}
+
+// advanceTurn updates the group message after any move.
+func (h *ChildBotHandler) advanceTurn(ctx context.Context, botID uuid.UUID, tc TurnContext, result *sessionapp.MoveResult, bot *botdomain.Bot) {
+	session := result.Session
+
+	if session.Status == sessiondomain.StatusFinished {
+		// Find winner name.
+		var winnerName string
+		for _, ev := range result.Events {
+			if ev.Type == "PLAYER_WON" {
+				if id, ok := ev.Payload["player_id"].(float64); ok {
+					winnerName = playerDisplayName(session, int64(id))
+				}
+			}
+		}
+		if winnerName == "" {
+			winnerName = "Someone"
+		}
+		text := unoGameOverText(winnerName) + "\n\nFinal scores:\n" + finalScores(session)
+		h.childEditMessage(ctx, bot, tc.GroupChatID, tc.GroupMsgID, text, nil)
+		_ = h.gameMsgStore.Delete(ctx, botID, tc.GroupChatID)
+		_ = h.chatIndex.Delete(ctx, botID, tc.GroupChatID)
+		return
+	}
+
+	state, err := parseUnoState(session.State)
+	if err != nil {
+		return
+	}
+	currentPlayerID := state.PlayerOrder[state.CurrentTurnIdx]
+	playerName := playerDisplayName(session, currentPlayerID)
+	handSize := len(state.Hands[currentPlayerID])
+	text := unoTurnText(state.DiscardPile[len(state.DiscardPile)-1], playerName, handSize)
+	h.childEditMessage(ctx, bot, tc.GroupChatID, tc.GroupMsgID, text, &unoViewHandKeyboard)
+}
+
+// sendHandDM sends the player's hand in a private DM and returns the keyboard message ID.
+func (h *ChildBotHandler) sendHandDM(ctx context.Context, bot *botdomain.Bot, userID int64, hand []uno.Card, top uno.Card) int64 {
+	if len(h.stickerMap) > 0 {
+		return h.sendHandDMStickers(ctx, bot, userID, hand, top)
+	}
+	return h.sendHandDMKeyboard(ctx, bot, userID, hand, top)
+}
+
+func (h *ChildBotHandler) sendHandDMKeyboard(ctx context.Context, bot *botdomain.Bot, userID int64, hand []uno.Card, top uno.Card) int64 {
+	text := unoHandText(hand, top)
+	kb := unoHandKeyboard(hand, top)
+	msgID, err := h.childSendGetID(ctx, bot, userID, text, kb)
+	if err != nil {
+		slog.Error("child handler: failed to send hand DM", "bot_id", bot.ID, "user_id", userID, "err", err)
+	}
+	return msgID
+}
+
+func (h *ChildBotHandler) sendHandDMStickers(ctx context.Context, bot *botdomain.Bot, userID int64, hand []uno.Card, top uno.Card) int64 {
+	rawToken, err := h.childToken(bot)
+	if err != nil {
+		return 0
+	}
+
+	// Send one sticker per playable card.
+	for i, card := range hand {
+		if !unoIsPlayable(card, top) {
+			continue
+		}
+		fileID, ok := h.stickerMap[unoCardKey(card)]
+		if !ok || fileID == "" {
+			continue
+		}
+		var cb string
+		if card.Color == uno.ColorWild {
+			cb = fmt.Sprintf("uwild:%d", i)
+		} else {
+			cb = fmt.Sprintf("uplay:%d", i)
+		}
+		kb := &telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{{Text: "▶ Play " + unoCardEmoji(card), CallbackData: cb}},
+			},
+		}
+		if err := h.tgClient.SendSticker(ctx, rawToken, userID, fileID, kb); err != nil {
+			slog.Error("child handler: sticker send failed", "bot_id", bot.ID, "err", err)
+		}
+	}
+
+	// Summary + draw button as a keyboard message (also used for editing after play).
+	text := fmt.Sprintf("🎴 Top card: %s — Tap a card above to play, or:", unoCardEmoji(top))
+	kb := telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{{Text: "🃏 Draw a card", CallbackData: "udraw"}},
+		},
+	}
+	msgID, err := h.childSendGetID(ctx, bot, userID, text, kb)
+	if err != nil {
+		slog.Error("child handler: failed to send DM draw button", "bot_id", bot.ID, "err", err)
+	}
+	return msgID
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func (h *ChildBotHandler) childToken(bot *botdomain.Bot) (string, error) {
@@ -370,19 +663,19 @@ func (h *ChildBotHandler) childToken(bot *botdomain.Bot) (string, error) {
 func (h *ChildBotHandler) childReply(ctx context.Context, bot *botdomain.Bot, chatID int64, text string) {
 	rawToken, err := h.childToken(bot)
 	if err != nil {
-		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
+		slog.Error("child handler: decrypt failed", "bot_id", bot.ID, "err", err)
 		return
 	}
 	slog.Info("child handler: sending reply", "bot_id", bot.ID, "chat_id", chatID)
 	if err := h.tgClient.SendMessage(ctx, rawToken, chatID, text); err != nil {
-		slog.Error("child handler: send message failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
+		slog.Error("child handler: send failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
 	}
 }
 
 func (h *ChildBotHandler) childSendWithKeyboard(ctx context.Context, bot *botdomain.Bot, chatID int64, text string, kb telegram.InlineKeyboardMarkup) {
 	rawToken, err := h.childToken(bot)
 	if err != nil {
-		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
+		slog.Error("child handler: decrypt failed", "bot_id", bot.ID, "err", err)
 		return
 	}
 	if err := h.tgClient.SendMessageWithKeyboard(ctx, rawToken, chatID, text, kb); err != nil {
@@ -390,24 +683,66 @@ func (h *ChildBotHandler) childSendWithKeyboard(ctx context.Context, bot *botdom
 	}
 }
 
+func (h *ChildBotHandler) childSendGetID(ctx context.Context, bot *botdomain.Bot, chatID int64, text string, kb telegram.InlineKeyboardMarkup) (int64, error) {
+	rawToken, err := h.childToken(bot)
+	if err != nil {
+		return 0, err
+	}
+	return h.tgClient.SendMessageGetID(ctx, rawToken, chatID, text, kb)
+}
+
 func (h *ChildBotHandler) childEditMessage(ctx context.Context, bot *botdomain.Bot, chatID, msgID int64, text string, kb *telegram.InlineKeyboardMarkup) {
 	rawToken, err := h.childToken(bot)
 	if err != nil {
-		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
+		slog.Error("child handler: decrypt failed", "bot_id", bot.ID, "err", err)
 		return
 	}
 	if err := h.tgClient.EditMessageText(ctx, rawToken, chatID, msgID, text, kb); err != nil {
-		slog.Error("child handler: edit message failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
+		slog.Error("child handler: edit failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
 	}
 }
 
 func (h *ChildBotHandler) childAnswerCallback(ctx context.Context, bot *botdomain.Bot, callbackQueryID string) error {
 	rawToken, err := h.childToken(bot)
 	if err != nil {
-		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
 		return err
 	}
 	return h.tgClient.AnswerCallbackQuery(ctx, rawToken, callbackQueryID)
+}
+
+func (h *ChildBotHandler) childAnswerCallbackAlert(ctx context.Context, bot *botdomain.Bot, callbackQueryID, text string) error {
+	rawToken, err := h.childToken(bot)
+	if err != nil {
+		return err
+	}
+	return h.tgClient.AnswerCallbackQueryAlert(ctx, rawToken, callbackQueryID, text)
+}
+
+// ── Uno state helpers ─────────────────────────────────────────────────────────
+
+func parseUnoState(raw json.RawMessage) (uno.State, error) {
+	var s uno.State
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return uno.State{}, fmt.Errorf("parse uno state: %w", err)
+	}
+	return s, nil
+}
+
+func playerDisplayName(session *sessiondomain.GameSession, telegramUserID int64) string {
+	for _, p := range session.Players {
+		if p.TelegramUserID == telegramUserID {
+			return p.DisplayName
+		}
+	}
+	return fmt.Sprintf("Player %d", telegramUserID)
+}
+
+func finalScores(session *sessiondomain.GameSession) string {
+	var sb strings.Builder
+	for _, p := range session.Players {
+		fmt.Fprintf(&sb, "• %s: %d pts\n", p.DisplayName, p.Score)
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func gameLabel(slug string) string {

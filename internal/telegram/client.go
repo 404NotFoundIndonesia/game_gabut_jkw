@@ -29,8 +29,17 @@ type Client interface {
 	// SendMessageWithKeyboard sends a message with an attached inline keyboard.
 	SendMessageWithKeyboard(ctx context.Context, botToken string, chatID int64, text string, keyboard InlineKeyboardMarkup) error
 
+	// SendMessageGetID sends a message with a keyboard and returns the sent message's ID.
+	SendMessageGetID(ctx context.Context, botToken string, chatID int64, text string, keyboard InlineKeyboardMarkup) (int64, error)
+
+	// SendSticker sends a sticker with an optional inline keyboard attached.
+	SendSticker(ctx context.Context, botToken string, chatID int64, fileID string, keyboard *InlineKeyboardMarkup) error
+
 	// AnswerCallbackQuery acknowledges a button tap (clears the loading spinner).
 	AnswerCallbackQuery(ctx context.Context, botToken, callbackQueryID string) error
+
+	// AnswerCallbackQueryAlert acknowledges a button tap with a visible alert popup.
+	AnswerCallbackQueryAlert(ctx context.Context, botToken, callbackQueryID, text string) error
 
 	// EditMessageText replaces the text (and optionally the keyboard) of an existing message.
 	// Pass nil keyboard to remove the inline keyboard.
@@ -184,10 +193,57 @@ func (c *httpClient) SendMessageWithKeyboard(ctx context.Context, botToken strin
 	return err
 }
 
+// ── SendMessageGetID ──────────────────────────────────────────────────────────
+
+func (c *httpClient) SendMessageGetID(ctx context.Context, botToken string, chatID int64, text string, keyboard InlineKeyboardMarkup) (int64, error) {
+	payload := map[string]any{
+		"chat_id":      chatID,
+		"text":         text,
+		"reply_markup": keyboard,
+	}
+	raw, err := c.callAPI(ctx, botToken, "sendMessage", payload)
+	if err != nil {
+		return 0, err
+	}
+	var msg struct {
+		MessageID int64 `json:"message_id"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return 0, fmt.Errorf("telegram: decode message_id: %w", err)
+	}
+	return msg.MessageID, nil
+}
+
+// ── SendSticker ───────────────────────────────────────────────────────────────
+
+func (c *httpClient) SendSticker(ctx context.Context, botToken string, chatID int64, fileID string, keyboard *InlineKeyboardMarkup) error {
+	payload := map[string]any{
+		"chat_id": chatID,
+		"sticker": fileID,
+	}
+	if keyboard != nil {
+		payload["reply_markup"] = keyboard
+	}
+	_, err := c.callAPI(ctx, botToken, "sendSticker", payload)
+	return err
+}
+
 // ── AnswerCallbackQuery ───────────────────────────────────────────────────────
 
 func (c *httpClient) AnswerCallbackQuery(ctx context.Context, botToken, callbackQueryID string) error {
 	payload := map[string]string{"callback_query_id": callbackQueryID}
+	_, err := c.callAPI(ctx, botToken, "answerCallbackQuery", payload)
+	return err
+}
+
+// ── AnswerCallbackQueryAlert ──────────────────────────────────────────────────
+
+func (c *httpClient) AnswerCallbackQueryAlert(ctx context.Context, botToken, callbackQueryID, text string) error {
+	payload := map[string]any{
+		"callback_query_id": callbackQueryID,
+		"text":              text,
+		"show_alert":        true,
+	}
 	_, err := c.callAPI(ctx, botToken, "answerCallbackQuery", payload)
 	return err
 }
