@@ -72,6 +72,10 @@ func activeBot() *botdomain.Bot {
 	return b
 }
 
+// noopDecryptor returns the ciphertext unchanged — tests don't need real decryption
+// because the stub TG client ignores the token value entirely.
+func noopDecryptor(ciphertext string) (string, error) { return ciphertext, nil }
+
 func newChildApp(
 	botLookup webhook.ChildBotLookup,
 	sessionSvc webhook.ChildSessionSvc,
@@ -82,7 +86,7 @@ func newChildApp(
 ) (*fiber.App, uuid.UUID) {
 	botID := uuid.New()
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	h := webhook.NewChildBotHandler(botLookup, sessionSvc, gameSvc, lbSvc, chatIndex, tg, 30*time.Minute)
+	h := webhook.NewChildBotHandler(botLookup, sessionSvc, gameSvc, lbSvc, chatIndex, tg, noopDecryptor, 30*time.Minute)
 	h.RegisterRoutes(app)
 	return app, botID
 }
@@ -130,6 +134,7 @@ func TestChildHandler_InvalidBotID_Returns200(t *testing.T) {
 		&stubChildLbSvc{},
 		newStubChatIndex(),
 		&stubTGClient{},
+		noopDecryptor,
 		time.Minute,
 	)
 	h.RegisterRoutes(app)
@@ -286,6 +291,7 @@ func TestChildHandler_Join_Success(t *testing.T) {
 		&stubChildLbSvc{},
 		chatIndex,
 		tg,
+		noopDecryptor,
 		time.Minute,
 	)
 	h.RegisterRoutes(app)
@@ -330,6 +336,7 @@ func TestChildHandler_Start_ServiceError(t *testing.T) {
 		&stubChildLbSvc{},
 		chatIndex,
 		tg,
+		noopDecryptor,
 		time.Minute,
 	)
 	h.RegisterRoutes(app)
@@ -379,6 +386,7 @@ func TestChildHandler_Move_Success(t *testing.T) {
 		&stubChildLbSvc{},
 		chatIndex,
 		tg,
+		noopDecryptor,
 		time.Minute,
 	)
 	h.RegisterRoutes(app)
@@ -410,6 +418,7 @@ func TestChildHandler_Move_GameOver(t *testing.T) {
 		&stubChildLbSvc{},
 		chatIndex,
 		tg,
+		noopDecryptor,
 		time.Minute,
 	)
 	h.RegisterRoutes(app)
@@ -455,6 +464,7 @@ func TestChildHandler_End_Success(t *testing.T) {
 		&stubChildLbSvc{},
 		chatIndex,
 		tg,
+		noopDecryptor,
 		time.Minute,
 	)
 	h.RegisterRoutes(app)
@@ -558,6 +568,7 @@ func TestChildHandler_Move_JSONPayload(t *testing.T) {
 		&stubChildLbSvc{},
 		chatIndex,
 		tg,
+		noopDecryptor,
 		time.Minute,
 	)
 	h.RegisterRoutes(app)

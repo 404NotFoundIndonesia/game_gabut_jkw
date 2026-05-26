@@ -236,7 +236,7 @@ func (s *BotService) ReactivateBotWithWebhook(ctx context.Context, id uuid.UUID)
 }
 
 func (s *BotService) childWebhookURL(botID string) string {
-	return s.webhookBaseURL + "/telegram/child/" + botID
+	return s.webhookBaseURL + "/telegram/child/" + botID + "/webhook"
 }
 
 // hashToken returns the SHA-256 hex digest of a raw bot token.

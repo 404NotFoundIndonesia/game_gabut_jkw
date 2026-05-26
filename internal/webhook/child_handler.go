@@ -43,15 +43,19 @@ type ChildLeaderboardSvc interface {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
+// TokenDecryptor decrypts an AES-256-GCM ciphertext back to a raw Telegram bot token.
+type TokenDecryptor func(ciphertext string) (string, error)
+
 // ChildBotHandler handles Telegram updates sent to child game bot webhooks.
 type ChildBotHandler struct {
-	botRepo    ChildBotLookup
-	sessionSvc ChildSessionSvc
-	gameSvc    MainGameSvc // reuses the same interface defined in main_handler.go
-	lbSvc      ChildLeaderboardSvc
-	chatIndex  ChatSessionIndex
-	tgClient   telegram.Client
-	sessionTTL time.Duration
+	botRepo        ChildBotLookup
+	sessionSvc     ChildSessionSvc
+	gameSvc        MainGameSvc // reuses the same interface defined in main_handler.go
+	lbSvc          ChildLeaderboardSvc
+	chatIndex      ChatSessionIndex
+	tgClient       telegram.Client
+	tokenDecryptor TokenDecryptor
+	sessionTTL     time.Duration
 }
 
 // NewChildBotHandler constructs the ChildBotHandler.
@@ -62,16 +66,18 @@ func NewChildBotHandler(
 	lbSvc ChildLeaderboardSvc,
 	chatIndex ChatSessionIndex,
 	tgClient telegram.Client,
+	tokenDecryptor TokenDecryptor,
 	sessionTTL time.Duration,
 ) *ChildBotHandler {
 	return &ChildBotHandler{
-		botRepo:    botRepo,
-		sessionSvc: sessionSvc,
-		gameSvc:    gameSvc,
-		lbSvc:      lbSvc,
-		chatIndex:  chatIndex,
-		tgClient:   tgClient,
-		sessionTTL: sessionTTL,
+		botRepo:        botRepo,
+		sessionSvc:     sessionSvc,
+		gameSvc:        gameSvc,
+		lbSvc:          lbSvc,
+		chatIndex:      chatIndex,
+		tgClient:       tgClient,
+		tokenDecryptor: tokenDecryptor,
+		sessionTTL:     sessionTTL,
 	}
 }
 
@@ -268,11 +274,14 @@ func (h *ChildBotHandler) cmdLeaderboardChild(ctx context.Context, botID uuid.UU
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// childReply sends a text message via the child bot's Telegram token.
-// The token ciphertext is stored on the bot; in production the infrastructure
-// layer (TokenDecryptingClient) decrypts it before the actual API call.
+// childReply decrypts the bot token and sends a text message via the child bot's Telegram token.
 func (h *ChildBotHandler) childReply(ctx context.Context, bot *botdomain.Bot, chatID int64, text string) {
-	if err := h.tgClient.SendMessage(ctx, bot.Token.Ciphertext(), chatID, text); err != nil {
+	rawToken, err := h.tokenDecryptor(bot.Token.Ciphertext())
+	if err != nil {
+		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
+		return
+	}
+	if err := h.tgClient.SendMessage(ctx, rawToken, chatID, text); err != nil {
 		slog.Error("child handler: send message failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
 	}
 }

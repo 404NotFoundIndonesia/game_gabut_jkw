@@ -38,6 +38,7 @@ import (
 	sessionhttp "github.com/404NFIDv2/bot-game-management/internal/session/interface/http"
 	"github.com/404NFIDv2/bot-game-management/internal/telegram"
 	"github.com/404NFIDv2/bot-game-management/internal/webhook"
+	"github.com/404NFIDv2/bot-game-management/pkg/crypto"
 	"github.com/404NFIDv2/bot-game-management/pkg/logger"
 	_ "github.com/404NFIDv2/bot-game-management/pkg/metrics" // register Prometheus metrics
 )
@@ -184,9 +185,14 @@ func main() {
 		cfg.TelegramAdminIDs,
 		convTTL,
 	).RegisterRoutes(tgGroup)
+	cryptoKey := crypto.PadKey(cfg.BotTokenEncryptionKey)
+	tokenDecryptor := webhook.TokenDecryptor(func(ciphertext string) (string, error) {
+		return crypto.Decrypt(cryptoKey, ciphertext)
+	})
 	webhook.NewChildBotHandler(
 		botRepo, sessionSvc, botGameSvc, lbSvc,
 		chatIndex, tgClient,
+		tokenDecryptor,
 		time.Duration(cfg.SessionTTLHours)*time.Hour,
 	).RegisterRoutes(tgGroup)
 
