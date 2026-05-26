@@ -434,32 +434,45 @@ func (h *ChildBotHandler) cmdLeaderboardChild(ctx context.Context, botID uuid.UU
 // handleInlineQuery returns the current player's playable cards as inline results.
 // Only the user whose turn it is will see valid results; others get an empty list.
 func (h *ChildBotHandler) handleInlineQuery(ctx context.Context, botID uuid.UUID, bot *botdomain.Bot, iq *telegram.InlineQuery) {
+	slog.Info("child handler: inline query received", "bot_id", botID, "user_id", iq.From.ID, "query", iq.Query)
+
 	rawToken, err := h.childToken(bot)
 	if err != nil {
+		slog.Error("child handler: inline query token decrypt failed", "bot_id", botID, "err", err)
 		return
 	}
 
 	tc, err := h.turnStore.Get(ctx, botID, iq.From.ID)
 	if err != nil {
+		slog.Info("child handler: inline query no turn context", "bot_id", botID, "user_id", iq.From.ID)
 		_ = h.tgClient.AnswerInlineQuery(ctx, rawToken, iq.ID, nil)
 		return
 	}
 
 	session, err := h.sessionSvc.GetSession(ctx, botID, tc.SessionID)
 	if err != nil {
+		slog.Error("child handler: inline query get session failed", "bot_id", botID, "session_id", tc.SessionID, "err", err)
 		_ = h.tgClient.AnswerInlineQuery(ctx, rawToken, iq.ID, nil)
 		return
 	}
 
 	state, err := parseUnoState(session.State)
-	if err != nil || state.PlayerOrder[state.CurrentTurnIdx] != iq.From.ID {
+	if err != nil {
+		slog.Error("child handler: inline query parse state failed", "bot_id", botID, "err", err)
+		_ = h.tgClient.AnswerInlineQuery(ctx, rawToken, iq.ID, nil)
+		return
+	}
+	if state.PlayerOrder[state.CurrentTurnIdx] != iq.From.ID {
+		slog.Info("child handler: inline query not player's turn", "bot_id", botID, "user_id", iq.From.ID)
 		_ = h.tgClient.AnswerInlineQuery(ctx, rawToken, iq.ID, nil)
 		return
 	}
 
 	hand := state.Hands[iq.From.ID]
 	top := state.DiscardPile[len(state.DiscardPile)-1]
-	_ = h.tgClient.AnswerInlineQuery(ctx, rawToken, iq.ID, unoInlineResults(hand, top, h.stickerMap))
+	results := unoInlineResults(hand, top, h.stickerMap)
+	slog.Info("child handler: inline query answering", "bot_id", botID, "user_id", iq.From.ID, "results", len(results))
+	_ = h.tgClient.AnswerInlineQuery(ctx, rawToken, iq.ID, results)
 }
 
 // handleChosenInlineResult applies the move when a player selects a card.
