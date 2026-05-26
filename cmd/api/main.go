@@ -198,21 +198,7 @@ func main() {
 			// Keys: "{color}_{value}" — values: Telegram sticker file_id strings.
 			// Color: red | green | blue | yellow | wild
 			// Value: 0-9 | skip | reverse | draw_two | wild | wild_draw_four
-			//
-			// Examples (replace with your actual sticker pack file_ids):
-			"red_0":               "+",
-			"red_1":               "+",
-			"red_2":               "+",
-			"red_3":               "+",
-			"red_4":               "+",
-			"red_5":               "+",
-			"red_6":               "+",
-			"red_7":               "+",
-			"red_8":               "+",
-			"red_9":               "+",
-			"red_skip":            "+",
-			"red_reverse":         "+",
-			"red_draw_two":        "+",
+			// Cards without an entry fall back to emoji text (article type).
 			"blue_0":              "CAACAgQAAxkBAAFKq6tqFT2bmNrDpDaqVRAl0gnXLNpCIgAC2QEAAl9XmQABKp6Tbd0qRv87BA",
 			"blue_1":              "CAACAgQAAxkBAAFKq61qFT2cN8LOqLMiUdTuQovxWvnf5AAC2wEAAl9XmQAB5bj5fwVc2g47BA",
 			"blue_2":              "CAACAgQAAxkBAAFKq69qFT2cnukqRg62evkuUNUs1HlhDgAC3QEAAl9XmQABBXuSQXaT_nM7BA",
@@ -239,19 +225,6 @@ func main() {
 			"green_skip":          "CAACAgQAAxkBAAFKrHBqFUDH4almvRBJ8Ps50_ZM_SN4CgACDwIAAl9XmQAB5_oQV8Ub2EI7BA",
 			"green_reverse":       "CAACAgQAAxkBAAFKrHRqFUDUOAuuaWqvEt1VEmw_lVwvfgACDQIAAl9XmQABTGKpgkt738k7BA",
 			"green_draw_two":      "CAACAgQAAxkBAAFKrE9qFT_gj1MRKtWN8IPv4tGXbUBGQQAC7QEAAl9XmQABnVEYPZ-qrxM7BA",
-			"yellow_0":            "+",
-			"yellow_1":            "+",
-			"yellow_2":            "+",
-			"yellow_3":            "+",
-			"yellow_4":            "+",
-			"yellow_5":            "+",
-			"yellow_6":            "+",
-			"yellow_7":            "+",
-			"yellow_8":            "+",
-			"yellow_9":            "+",
-			"yellow_skip":         "+",
-			"yellow_reverse":      "+",
-			"yellow_draw_two":     "+",
 			"wild_wild":           "CAACAgQAAxkBAAFKq8VqFT2l-OWJnDWuadoorxWHSgZMkQAC8wEAAl9XmQAByOY26RUBPWw7BA",
 			"wild_wild_draw_four": "CAACAgQAAxkBAAFKq8dqFT2lJ7foZ4RWy5KpSdBIdbHHRQAC9QEAAl9XmQAB1zoAAWVAoFZJOwQ",
 		},
