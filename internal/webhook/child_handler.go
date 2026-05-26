@@ -94,14 +94,25 @@ func (h *ChildBotHandler) handleUpdate(c *fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	}
 
+	slog.Info("child handler: update received", "bot_id", botID)
+
 	bot, err := h.botRepo.FindByID(c.Context(), botID)
-	if err != nil || !bot.Active {
-		slog.Error("child handler: bot not found or inactive", "bot_id", botID)
+	if err != nil {
+		slog.Error("child handler: bot not found", "bot_id", botID, "err", err)
+		return c.SendStatus(fiber.StatusOK)
+	}
+	if !bot.Active {
+		slog.Error("child handler: bot inactive", "bot_id", botID)
 		return c.SendStatus(fiber.StatusOK)
 	}
 
 	var update telegram.Update
-	if err := c.BodyParser(&update); err != nil || update.Message == nil || update.Message.From == nil {
+	if err := c.BodyParser(&update); err != nil {
+		slog.Error("child handler: body parse failed", "bot_id", botID, "err", err)
+		return c.SendStatus(fiber.StatusOK)
+	}
+	if update.Message == nil || update.Message.From == nil {
+		slog.Info("child handler: non-message update, skipping", "bot_id", botID)
 		return c.SendStatus(fiber.StatusOK)
 	}
 
@@ -114,11 +125,14 @@ func (h *ChildBotHandler) handleUpdate(c *fiber.Ctx) error {
 	chatID := update.Message.Chat.ID
 	text := strings.TrimSpace(update.Message.Text)
 
+	slog.Info("child handler: message received", "bot_id", botID, "chat_id", chatID, "user_id", userID, "text", text)
+
 	if !strings.HasPrefix(text, "/") {
 		return c.SendStatus(fiber.StatusOK)
 	}
 
 	cmd, args := parseCommand(text)
+	slog.Info("child handler: dispatching command", "bot_id", botID, "cmd", cmd)
 	switch cmd {
 	case "/newgame":
 		h.cmdNewGame(ctx, botID, chatID, userID, displayName, args, bot)
@@ -281,6 +295,7 @@ func (h *ChildBotHandler) childReply(ctx context.Context, bot *botdomain.Bot, ch
 		slog.Error("child handler: failed to decrypt bot token", "bot_id", bot.ID, "err", err)
 		return
 	}
+	slog.Info("child handler: sending reply", "bot_id", bot.ID, "chat_id", chatID)
 	if err := h.tgClient.SendMessage(ctx, rawToken, chatID, text); err != nil {
 		slog.Error("child handler: send message failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
 	}
