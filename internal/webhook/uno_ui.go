@@ -2,14 +2,13 @@ package webhook
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/404NFIDv2/bot-game-management/internal/games/uno"
 	"github.com/404NFIDv2/bot-game-management/internal/telegram"
 )
 
 // UnoStickerMap maps "color_value" (e.g. "red_5", "wild_wild_draw_four") to a
-// Telegram sticker file_id. Leave empty to use emoji inline-keyboard buttons.
+// Telegram sticker file_id used for cached_sticker inline results.
 type UnoStickerMap map[string]string
 
 func unoCardKey(c uno.Card) string {
@@ -55,90 +54,84 @@ func unoIsPlayable(card, top uno.Card) bool {
 	return card.Color == top.Color || card.Value == top.Value
 }
 
-// unoHandText builds the summary text shown above the hand keyboard.
-func unoHandText(hand []uno.Card, top uno.Card) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "🎴 Top card: %s\n\n", unoCardEmoji(top))
-	playable := 0
-	for _, c := range hand {
-		if unoIsPlayable(c, top) {
-			playable++
-		}
+// unoPlayButton is the group-message button that opens inline card selection.
+// Only the current player taps it; the inline results are private to them.
+func unoPlayButton() telegram.InlineKeyboardMarkup {
+	empty := ""
+	return telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{{Text: "🃏 Play a card", SwitchInlineQueryCurrentChat: &empty}},
+		},
 	}
-	fmt.Fprintf(&sb, "🃏 Your hand (%d cards, %d playable):\n", len(hand), playable)
-	for _, c := range hand {
-		mark := "  "
-		if unoIsPlayable(c, top) {
-			mark = "▶ "
-		}
-		fmt.Fprintf(&sb, "%s%s\n", mark, unoCardEmoji(c))
-	}
-	return strings.TrimRight(sb.String(), "\n")
 }
 
-// unoHandKeyboard builds the inline keyboard for a player's hand.
-// Only playable cards are shown; wild cards get a callback that triggers
-// color selection before the move is submitted.
-func unoHandKeyboard(hand []uno.Card, top uno.Card) telegram.InlineKeyboardMarkup {
-	var rows [][]telegram.InlineKeyboardButton
-	var row []telegram.InlineKeyboardButton
+// unoInlineResults builds the list of inline results shown to the current player.
+// Non-wild playable cards → one result each.
+// Wild cards → four results (one per color) for single-tap color selection.
+// A "draw" result is always appended last.
+// If stickerMap is non-empty and has a file_id for the card, cached_sticker type is used.
+func unoInlineResults(hand []uno.Card, top uno.Card, stickerMap UnoStickerMap) []telegram.InlineQueryResult {
+	colorEmoji := map[string]string{"red": "🔴", "blue": "🔵", "yellow": "🟡", "green": "🟢"}
+	colors := []string{"red", "blue", "yellow", "green"}
+
+	var results []telegram.InlineQueryResult
 
 	for i, card := range hand {
 		if !unoIsPlayable(card, top) {
 			continue
 		}
-		var cb string
 		if card.Color == uno.ColorWild {
-			cb = fmt.Sprintf("uwild:%d", i)
+			for _, color := range colors {
+				results = append(results, telegram.InlineQueryResult{
+					Type:        "article",
+					ID:          fmt.Sprintf("wild:%d:%s", i, color),
+					Title:       fmt.Sprintf("%s %s", unoCardEmoji(card), colorEmoji[color]),
+					Description: fmt.Sprintf("Play Wild → %s", color),
+					InputMessageContent: &telegram.InputMessageContent{
+						MessageText: fmt.Sprintf("🎴 Wild → %s %s", colorEmoji[color], color),
+					},
+				})
+			}
+			continue
+		}
+
+		fileID := stickerMap[unoCardKey(card)]
+		if fileID != "" {
+			results = append(results, telegram.InlineQueryResult{
+				Type:          "cached_sticker",
+				ID:            fmt.Sprintf("play:%d", i),
+				StickerFileID: fileID,
+			})
 		} else {
-			cb = fmt.Sprintf("uplay:%d", i)
-		}
-		row = append(row, telegram.InlineKeyboardButton{
-			Text:         unoCardEmoji(card),
-			CallbackData: cb,
-		})
-		if len(row) == 4 {
-			rows = append(rows, row)
-			row = nil
+			results = append(results, telegram.InlineQueryResult{
+				Type:        "article",
+				ID:          fmt.Sprintf("play:%d", i),
+				Title:       unoCardEmoji(card),
+				Description: "Play this card",
+				InputMessageContent: &telegram.InputMessageContent{
+					MessageText: fmt.Sprintf("🎴 %s", unoCardEmoji(card)),
+				},
+			})
 		}
 	}
-	if len(row) > 0 {
-		rows = append(rows, row)
-	}
 
-	rows = append(rows, []telegram.InlineKeyboardButton{
-		{Text: "🃏 Draw a card", CallbackData: "udraw"},
-	})
-	return telegram.InlineKeyboardMarkup{InlineKeyboard: rows}
-}
-
-// unoColorKeyboard returns the color-selection keyboard for a wild card.
-func unoColorKeyboard(cardIdx int) telegram.InlineKeyboardMarkup {
-	return telegram.InlineKeyboardMarkup{
-		InlineKeyboard: [][]telegram.InlineKeyboardButton{
-			{
-				{Text: "🔴 Red", CallbackData: fmt.Sprintf("ucolor:%d:red", cardIdx)},
-				{Text: "🔵 Blue", CallbackData: fmt.Sprintf("ucolor:%d:blue", cardIdx)},
-			},
-			{
-				{Text: "🟡 Yellow", CallbackData: fmt.Sprintf("ucolor:%d:yellow", cardIdx)},
-				{Text: "🟢 Green", CallbackData: fmt.Sprintf("ucolor:%d:green", cardIdx)},
-			},
+	results = append(results, telegram.InlineQueryResult{
+		Type:        "article",
+		ID:          "draw",
+		Title:       "🃏 Draw a card",
+		Description: "Draw from the deck",
+		InputMessageContent: &telegram.InputMessageContent{
+			MessageText: "🃏 Drew a card.",
 		},
-	}
-}
+	})
 
-// unoViewHandKeyboard is the single button shown in the group on each turn.
-var unoViewHandKeyboard = telegram.InlineKeyboardMarkup{
-	InlineKeyboard: [][]telegram.InlineKeyboardButton{
-		{{Text: "🃏 View my hand", CallbackData: "vhand"}},
-	},
+	return results
 }
 
 // unoTurnText builds the group message shown on each turn.
 func unoTurnText(topCard uno.Card, playerName string, handSize int) string {
 	return fmt.Sprintf(
-		"🎮 *Uno* — Top card: %s\n\n👤 It's *%s*'s turn! (%d cards in hand)\nTap the button below to view your hand.",
+		"🎮 *Uno* — Top card: %s\n\n👤 It's *%s*'s turn! (%d cards)\nTap below to pick a card.",
 		unoCardEmoji(topCard), playerName, handSize,
 	)
 }

@@ -2,9 +2,25 @@ package telegram
 
 // Update represents a single incoming update from the Telegram Bot API.
 type Update struct {
-	UpdateID      int64          `json:"update_id"`
-	Message       *Message       `json:"message"`
-	CallbackQuery *CallbackQuery `json:"callback_query"`
+	UpdateID            int64                `json:"update_id"`
+	Message             *Message             `json:"message"`
+	CallbackQuery       *CallbackQuery       `json:"callback_query"`
+	InlineQuery         *InlineQuery         `json:"inline_query"`
+	ChosenInlineResult  *ChosenInlineResult  `json:"chosen_inline_result"`
+}
+
+// InlineQuery is received when a user triggers the bot in inline mode.
+type InlineQuery struct {
+	ID   string `json:"id"`
+	From *User  `json:"from"`
+	Query string `json:"query"`
+}
+
+// ChosenInlineResult is sent after a user selects an inline result.
+type ChosenInlineResult struct {
+	ResultID string `json:"result_id"`
+	From     *User  `json:"from"`
+	Query    string `json:"query"`
 }
 
 // CallbackQuery is sent when a user taps an inline keyboard button.
@@ -17,8 +33,9 @@ type CallbackQuery struct {
 
 // InlineKeyboardButton is a single button in an inline keyboard row.
 type InlineKeyboardButton struct {
-	Text         string `json:"text"`
-	CallbackData string `json:"callback_data,omitempty"`
+	Text                         string  `json:"text"`
+	CallbackData                 string  `json:"callback_data,omitempty"`
+	SwitchInlineQueryCurrentChat *string `json:"switch_inline_query_current_chat,omitempty"`
 }
 
 // InlineKeyboardMarkup is an inline keyboard attached to a message.

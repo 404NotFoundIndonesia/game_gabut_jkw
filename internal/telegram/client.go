@@ -44,6 +44,26 @@ type Client interface {
 	// EditMessageText replaces the text (and optionally the keyboard) of an existing message.
 	// Pass nil keyboard to remove the inline keyboard.
 	EditMessageText(ctx context.Context, botToken string, chatID, messageID int64, text string, keyboard *InlineKeyboardMarkup) error
+
+	// AnswerInlineQuery responds to an inline_query update with a list of results.
+	// Pass nil or empty slice to return no results.
+	AnswerInlineQuery(ctx context.Context, botToken, queryID string, results []InlineQueryResult) error
+}
+
+// InlineQueryResult is a single result in an answerInlineQuery response.
+// Supports "article" and "cached_sticker" types.
+type InlineQueryResult struct {
+	Type                string               `json:"type"`
+	ID                  string               `json:"id"`
+	Title               string               `json:"title,omitempty"`
+	Description         string               `json:"description,omitempty"`
+	InputMessageContent *InputMessageContent `json:"input_message_content,omitempty"`
+	StickerFileID       string               `json:"sticker_file_id,omitempty"`
+}
+
+// InputMessageContent is the text content sent when an article result is chosen.
+type InputMessageContent struct {
+	MessageText string `json:"message_text"`
 }
 
 type httpClient struct {
@@ -260,5 +280,21 @@ func (c *httpClient) EditMessageText(ctx context.Context, botToken string, chatI
 		payload["reply_markup"] = keyboard
 	}
 	_, err := c.callAPI(ctx, botToken, "editMessageText", payload)
+	return err
+}
+
+// ── AnswerInlineQuery ─────────────────────────────────────────────────────────
+
+func (c *httpClient) AnswerInlineQuery(ctx context.Context, botToken, queryID string, results []InlineQueryResult) error {
+	if results == nil {
+		results = []InlineQueryResult{}
+	}
+	payload := map[string]any{
+		"inline_query_id": queryID,
+		"results":         results,
+		"cache_time":      0,
+		"is_personal":     true,
+	}
+	_, err := c.callAPI(ctx, botToken, "answerInlineQuery", payload)
 	return err
 }

@@ -190,10 +190,9 @@ func main() {
 		return crypto.Decrypt(cryptoKey, ciphertext)
 	})
 	turnStore := webhook.NewRedisTurnStore(redisClient)
-	gameMsgStore := webhook.NewRedisGameMsgStore(redisClient)
 	webhook.NewChildBotHandler(
 		botRepo, sessionSvc, botGameSvc, lbSvc,
-		chatIndex, turnStore, gameMsgStore,
+		chatIndex, turnStore,
 		tgClient, tokenDecryptor,
 		webhook.UnoStickerMap{
 			// Keys: "{color}_{value}" — values: Telegram sticker file_id strings.

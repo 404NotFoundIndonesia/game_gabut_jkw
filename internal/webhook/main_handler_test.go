@@ -133,6 +133,9 @@ func (s *stubTGClient) EditMessageText(_ context.Context, _ string, _, _ int64, 
 	s.lastMessage = text
 	return nil
 }
+func (s *stubTGClient) AnswerInlineQuery(_ context.Context, _, _ string, _ []telegram.InlineQueryResult) error {
+	return nil
+}
 
 // ── test helpers ──────────────────────────────────────────────────────────────
 

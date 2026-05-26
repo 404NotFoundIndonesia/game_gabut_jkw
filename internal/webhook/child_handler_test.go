@@ -62,7 +62,7 @@ func (s *stubChildSessionSvc) EndSession(_ context.Context, _, _ uuid.UUID, _ se
 	return s.session, s.err
 }
 
-// ── in-memory TurnStore / GameMsgStore stubs ──────────────────────────────────
+// ── in-memory TurnStore stub ──────────────────────────────────────────────────
 
 type stubTurnStore struct{ m map[string]webhook.TurnContext }
 
@@ -80,25 +80,6 @@ func (s *stubTurnStore) Get(_ context.Context, botID uuid.UUID, userID int64) (w
 }
 func (s *stubTurnStore) Delete(_ context.Context, botID uuid.UUID, userID int64) error {
 	delete(s.m, botID.String()+":"+strconv.FormatInt(userID, 10))
-	return nil
-}
-
-type stubGameMsgStore struct{ m map[string]int64 }
-
-func newStubGameMsgStore() *stubGameMsgStore { return &stubGameMsgStore{m: map[string]int64{}} }
-func (s *stubGameMsgStore) Set(_ context.Context, botID uuid.UUID, chatID, msgID int64, _ time.Duration) error {
-	s.m[botID.String()+":"+strconv.FormatInt(chatID, 10)] = msgID
-	return nil
-}
-func (s *stubGameMsgStore) Get(_ context.Context, botID uuid.UUID, chatID int64) (int64, error) {
-	v, ok := s.m[botID.String()+":"+strconv.FormatInt(chatID, 10)]
-	if !ok {
-		return 0, fmt.Errorf("not found")
-	}
-	return v, nil
-}
-func (s *stubGameMsgStore) Delete(_ context.Context, botID uuid.UUID, chatID int64) error {
-	delete(s.m, botID.String()+":"+strconv.FormatInt(chatID, 10))
 	return nil
 }
 
@@ -134,7 +115,7 @@ func newChildApp(
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	h := webhook.NewChildBotHandler(
 		botLookup, sessionSvc, gameSvc, lbSvc,
-		chatIndex, newStubTurnStore(), newStubGameMsgStore(),
+		chatIndex, newStubTurnStore(),
 		tg, noopDecryptor, nil, 30*time.Minute,
 	)
 	h.RegisterRoutes(app)
@@ -183,7 +164,7 @@ func TestChildHandler_InvalidBotID_Returns200(t *testing.T) {
 		&stubMainGameSvc{},
 		&stubChildLbSvc{},
 		newStubChatIndex(),
-		newStubTurnStore(), newStubGameMsgStore(),
+		newStubTurnStore(),
 		&stubTGClient{},
 		noopDecryptor,
 		nil,
@@ -346,7 +327,7 @@ func TestChildHandler_NewGame_Callback_Success(t *testing.T) {
 		&stubMainGameSvc{}, // GetGameBySlug returns a game when err==nil
 		&stubChildLbSvc{},
 		chatIndex,
-		newStubTurnStore(), newStubGameMsgStore(),
+		newStubTurnStore(),
 		tg,
 		noopDecryptor,
 		nil,
@@ -410,7 +391,7 @@ func TestChildHandler_Join_Success(t *testing.T) {
 		&stubMainGameSvc{},
 		&stubChildLbSvc{},
 		chatIndex,
-		newStubTurnStore(), newStubGameMsgStore(),
+		newStubTurnStore(),
 		tg,
 		noopDecryptor,
 		nil,
@@ -457,7 +438,7 @@ func TestChildHandler_Start_ServiceError(t *testing.T) {
 		&stubMainGameSvc{},
 		&stubChildLbSvc{},
 		chatIndex,
-		newStubTurnStore(), newStubGameMsgStore(),
+		newStubTurnStore(),
 		tg,
 		noopDecryptor,
 		nil,
@@ -509,7 +490,7 @@ func TestChildHandler_Move_Success(t *testing.T) {
 		&stubMainGameSvc{},
 		&stubChildLbSvc{},
 		chatIndex,
-		newStubTurnStore(), newStubGameMsgStore(),
+		newStubTurnStore(),
 		tg,
 		noopDecryptor,
 		nil,
@@ -543,7 +524,7 @@ func TestChildHandler_Move_GameOver(t *testing.T) {
 		&stubMainGameSvc{},
 		&stubChildLbSvc{},
 		chatIndex,
-		newStubTurnStore(), newStubGameMsgStore(),
+		newStubTurnStore(),
 		tg,
 		noopDecryptor,
 		nil,
@@ -591,7 +572,7 @@ func TestChildHandler_End_Success(t *testing.T) {
 		&stubMainGameSvc{},
 		&stubChildLbSvc{},
 		chatIndex,
-		newStubTurnStore(), newStubGameMsgStore(),
+		newStubTurnStore(),
 		tg,
 		noopDecryptor,
 		nil,
@@ -697,7 +678,7 @@ func TestChildHandler_Move_JSONPayload(t *testing.T) {
 		&stubMainGameSvc{},
 		&stubChildLbSvc{},
 		chatIndex,
-		newStubTurnStore(), newStubGameMsgStore(),
+		newStubTurnStore(),
 		tg,
 		noopDecryptor,
 		nil,
