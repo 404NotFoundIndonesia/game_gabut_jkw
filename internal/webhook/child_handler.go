@@ -337,10 +337,7 @@ func (h *ChildBotHandler) startUno(ctx context.Context, botID uuid.UUID, chatID 
 	}
 	playerName := playerDisplayName(session, state.PlayerOrder[state.CurrentTurnIdx])
 	text := unoTurnText(state.DiscardPile[len(state.DiscardPile)-1], playerName, len(state.Hands[state.PlayerOrder[state.CurrentTurnIdx]]))
-	msgID, err := h.childSendGetID(ctx, bot, chatID, text, unoViewHandKeyboard)
-	if err == nil {
-		_ = h.gameMsgStore.Set(ctx, botID, chatID, msgID, h.sessionTTL)
-	}
+	h.childSendWithKeyboard(ctx, bot, chatID, text, unoViewHandKeyboard)
 }
 
 func (h *ChildBotHandler) startSambungKata(ctx context.Context, botID uuid.UUID, chatID int64, session *sessiondomain.GameSession, bot *botdomain.Bot) {
@@ -350,11 +347,7 @@ func (h *ChildBotHandler) startSambungKata(ctx context.Context, botID uuid.UUID,
 		return
 	}
 	playerName := playerDisplayName(session, state.PlayerOrder[state.CurrentTurnIdx])
-	text := skTurnText(playerName, state.LastWord)
-	msgID, err := h.childSendGetID(ctx, bot, chatID, text, telegram.InlineKeyboardMarkup{})
-	if err == nil {
-		_ = h.gameMsgStore.Set(ctx, botID, chatID, msgID, h.sessionTTL)
-	}
+	h.childReply(ctx, bot, chatID, skTurnText(playerName, state.LastWord))
 }
 
 func (h *ChildBotHandler) startTruthOrDate(ctx context.Context, botID uuid.UUID, chatID int64, session *sessiondomain.GameSession, bot *botdomain.Bot) {
@@ -364,12 +357,7 @@ func (h *ChildBotHandler) startTruthOrDate(ctx context.Context, botID uuid.UUID,
 		return
 	}
 	playerName := playerDisplayName(session, state.PlayerOrder[state.CurrentTurnIdx])
-	text := tdTurnText(playerName, state.Round)
-	kb := tdChoiceKeyboard()
-	msgID, err := h.childSendGetID(ctx, bot, chatID, text, kb)
-	if err == nil {
-		_ = h.gameMsgStore.Set(ctx, botID, chatID, msgID, h.sessionTTL)
-	}
+	h.childSendWithKeyboard(ctx, bot, chatID, tdTurnText(playerName, state.Round), tdChoiceKeyboard())
 }
 
 func (h *ChildBotHandler) cmdMove(ctx context.Context, botID uuid.UUID, chatID, userID int64, args []string, bot *botdomain.Bot) {
@@ -433,14 +421,7 @@ func (h *ChildBotHandler) cmdEnd(ctx context.Context, botID uuid.UUID, chatID, u
 	for _, p := range session.Players {
 		fmt.Fprintf(&sb, "• %s: %d\n", p.DisplayName, p.Score)
 	}
-
-	// Edit the turn message to show final result (remove button).
-	if msgID, err := h.gameMsgStore.Get(ctx, botID, chatID); err == nil {
-		h.childEditMessage(ctx, bot, chatID, msgID, sb.String(), nil)
-		_ = h.gameMsgStore.Delete(ctx, botID, chatID)
-	} else {
-		h.childReply(ctx, bot, chatID, sb.String())
-	}
+	h.childReply(ctx, bot, chatID, sb.String())
 }
 
 func (h *ChildBotHandler) cmdLeaderboardChild(ctx context.Context, botID uuid.UUID, chatID int64, bot *botdomain.Bot) {
@@ -608,7 +589,6 @@ func (h *ChildBotHandler) advanceTurn(ctx context.Context, botID uuid.UUID, tc T
 	session := result.Session
 
 	if session.Status == sessiondomain.StatusFinished {
-		// Find winner name.
 		var winnerName string
 		for _, ev := range result.Events {
 			if ev.Type == "PLAYER_WON" {
@@ -621,8 +601,7 @@ func (h *ChildBotHandler) advanceTurn(ctx context.Context, botID uuid.UUID, tc T
 			winnerName = "Someone"
 		}
 		text := unoGameOverText(winnerName) + "\n\nFinal scores:\n" + finalScores(session)
-		h.childEditMessage(ctx, bot, tc.GroupChatID, tc.GroupMsgID, text, nil)
-		_ = h.gameMsgStore.Delete(ctx, botID, tc.GroupChatID)
+		h.childReply(ctx, bot, tc.GroupChatID, text)
 		_ = h.chatIndex.Delete(ctx, botID, tc.GroupChatID)
 		return
 	}
@@ -635,7 +614,7 @@ func (h *ChildBotHandler) advanceTurn(ctx context.Context, botID uuid.UUID, tc T
 	playerName := playerDisplayName(session, currentPlayerID)
 	handSize := len(state.Hands[currentPlayerID])
 	text := unoTurnText(state.DiscardPile[len(state.DiscardPile)-1], playerName, handSize)
-	h.childEditMessage(ctx, bot, tc.GroupChatID, tc.GroupMsgID, text, &unoViewHandKeyboard)
+	h.childSendWithKeyboard(ctx, bot, tc.GroupChatID, text, unoViewHandKeyboard)
 }
 
 // sendHandDM sends the player's hand in a private DM and returns the keyboard message ID.
@@ -851,9 +830,7 @@ func (h *ChildBotHandler) cbTDChoice(ctx context.Context, botID uuid.UUID, group
 		return
 	}
 	playerName := playerDisplayName(result.Session, userID)
-	text := tdQuestionText(playerName, choice, state.CurrentQuestion)
-	kb := tdSkipKeyboard()
-	h.childEditMessage(ctx, bot, groupChatID, groupMsgID, text, &kb)
+	h.childSendWithKeyboard(ctx, bot, groupChatID, tdQuestionText(playerName, choice, state.CurrentQuestion), tdSkipKeyboard())
 }
 
 func (h *ChildBotHandler) cbTDSkip(ctx context.Context, botID uuid.UUID, groupChatID, groupMsgID, userID int64, callbackID string, bot *botdomain.Bot) {
@@ -891,11 +868,7 @@ func (h *ChildBotHandler) advanceTurnSK(ctx context.Context, botID uuid.UUID, gr
 		if winnerName == "" {
 			winnerName = "Someone"
 		}
-		text := skGameOverText(winnerName) + "\n\nFinal scores:\n" + finalScores(session)
-		if msgID, err := h.gameMsgStore.Get(ctx, botID, groupChatID); err == nil {
-			h.childEditMessage(ctx, bot, groupChatID, msgID, text, nil)
-			_ = h.gameMsgStore.Delete(ctx, botID, groupChatID)
-		}
+		h.childReply(ctx, bot, groupChatID, skGameOverText(winnerName)+"\n\nFinal scores:\n"+finalScores(session))
 		_ = h.chatIndex.Delete(ctx, botID, groupChatID)
 		return
 	}
@@ -924,15 +897,12 @@ func (h *ChildBotHandler) advanceTurnSK(ctx context.Context, botID uuid.UUID, gr
 
 	currentPlayerID := state.PlayerOrder[state.CurrentTurnIdx]
 	playerName := playerDisplayName(session, currentPlayerID)
-	text := prefix + skTurnText(playerName, state.LastWord)
-	if msgID, err := h.gameMsgStore.Get(ctx, botID, groupChatID); err == nil {
-		h.childEditMessage(ctx, bot, groupChatID, msgID, text, nil)
-	}
+	h.childReply(ctx, bot, groupChatID, prefix+skTurnText(playerName, state.LastWord))
 }
 
 // ── Truth or Date advance ─────────────────────────────────────────────────────
 
-func (h *ChildBotHandler) advanceTurnTD(ctx context.Context, botID uuid.UUID, groupChatID int64, result *sessionapp.MoveResult, bot *botdomain.Bot) {
+func (h *ChildBotHandler) advanceTurnTD(ctx context.Context, _ uuid.UUID, groupChatID int64, result *sessionapp.MoveResult, bot *botdomain.Bot) {
 	session := result.Session
 	state, err := parseTDState(session.State)
 	if err != nil {
@@ -940,11 +910,7 @@ func (h *ChildBotHandler) advanceTurnTD(ctx context.Context, botID uuid.UUID, gr
 	}
 	currentPlayerID := state.PlayerOrder[state.CurrentTurnIdx]
 	playerName := playerDisplayName(session, currentPlayerID)
-	text := tdTurnText(playerName, state.Round)
-	kb := tdChoiceKeyboard()
-	if msgID, err := h.gameMsgStore.Get(ctx, botID, groupChatID); err == nil {
-		h.childEditMessage(ctx, bot, groupChatID, msgID, text, &kb)
-	}
+	h.childSendWithKeyboard(ctx, bot, groupChatID, tdTurnText(playerName, state.Round), tdChoiceKeyboard())
 }
 
 // ── Sambung Kata / Truth or Date state parsers ────────────────────────────────
