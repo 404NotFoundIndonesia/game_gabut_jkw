@@ -161,9 +161,15 @@ func (c *httpClient) GetBotID(ctx context.Context, botToken string) (int64, erro
 // ── SetWebhook ────────────────────────────────────────────────────────────────
 
 func (c *httpClient) SetWebhook(ctx context.Context, botToken, webhookURL, secretToken string) error {
-	payload := map[string]string{
+	payload := map[string]any{
 		"url":          webhookURL,
 		"secret_token": secretToken,
+		"allowed_updates": []string{
+			"message",
+			"callback_query",
+			"inline_query",
+			"chosen_inline_result",
+		},
 	}
 	_, err := c.callAPI(ctx, botToken, "setWebhook", payload)
 	return err
