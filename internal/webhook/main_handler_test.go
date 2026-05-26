@@ -155,7 +155,7 @@ func makeUpdate(userID int64, text string) telegram.Update {
 		Message: &telegram.Message{
 			MessageID: 1,
 			From:      &telegram.User{ID: userID},
-			Chat:      &telegram.Chat{ID: userID},
+			Chat:      &telegram.Chat{ID: userID, Type: "private"},
 			Text:      text,
 		},
 	}

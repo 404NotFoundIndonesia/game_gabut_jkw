@@ -109,6 +109,7 @@ func (h *MainBotHandler) handleUpdate(c *fiber.Ctx) error {
 
 	userID := update.Message.From.ID
 	chatID := update.Message.Chat.ID
+	chatType := update.Message.Chat.Type
 	text := strings.TrimSpace(update.Message.Text)
 
 	if _, ok := h.adminIDs[userID]; !ok {
@@ -118,7 +119,7 @@ func (h *MainBotHandler) handleUpdate(c *fiber.Ctx) error {
 
 	// Non-command text advances the /addbot FSM.
 	if !strings.HasPrefix(text, "/") {
-		h.handleFSMText(ctx, userID, chatID, text)
+		h.handleFSMText(ctx, userID, chatID, chatType, text)
 		return c.SendStatus(fiber.StatusOK)
 	}
 
@@ -143,7 +144,9 @@ func (h *MainBotHandler) handleUpdate(c *fiber.Ctx) error {
 	case "/leaderboard":
 		h.cmdLeaderboardMenu(ctx, chatID, args)
 	default:
-		h.reply(ctx, chatID, mainHelpText())
+		if chatType == "private" {
+			h.reply(ctx, chatID, mainHelpText())
+		}
 	}
 	return c.SendStatus(fiber.StatusOK)
 }
@@ -218,10 +221,12 @@ func (h *MainBotHandler) handleCallbackQuery(ctx context.Context, cq *telegram.C
 
 // ── FSM ───────────────────────────────────────────────────────────────────────
 
-func (h *MainBotHandler) handleFSMText(ctx context.Context, userID, chatID int64, text string) {
+func (h *MainBotHandler) handleFSMText(ctx context.Context, userID, chatID int64, chatType, text string) {
 	data, err := h.convStore.Get(ctx, userID)
 	if err != nil || data.State == ConvStateIdle {
-		h.reply(ctx, chatID, mainHelpText())
+		if chatType == "private" {
+			h.reply(ctx, chatID, mainHelpText())
+		}
 		return
 	}
 

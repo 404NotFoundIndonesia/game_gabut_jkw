@@ -134,7 +134,8 @@ func (h *ChildBotHandler) handleMessage(ctx context.Context, botID uuid.UUID, bo
 	chatID := msg.Chat.ID
 	text := strings.TrimSpace(msg.Text)
 
-	slog.Info("child handler: message received", "bot_id", botID, "chat_id", chatID, "user_id", userID, "text", text)
+	chatType := msg.Chat.Type
+	slog.Info("child handler: message received", "bot_id", botID, "chat_id", chatID, "user_id", userID, "text", text, "chat_type", chatType)
 
 	if !strings.HasPrefix(text, "/") {
 		return
@@ -156,7 +157,9 @@ func (h *ChildBotHandler) handleMessage(ctx context.Context, botID uuid.UUID, bo
 	case "/leaderboard":
 		h.cmdLeaderboardChild(ctx, botID, chatID, bot)
 	default:
-		h.childReply(ctx, bot, chatID, childHelpText())
+		if chatType == "private" {
+			h.childReply(ctx, bot, chatID, childHelpText())
+		}
 	}
 }
 

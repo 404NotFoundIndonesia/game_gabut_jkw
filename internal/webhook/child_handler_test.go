@@ -107,7 +107,7 @@ func makeChildUpdate(userID int64, firstName, text string) telegram.Update {
 		Message: &telegram.Message{
 			MessageID: 1,
 			From:      &telegram.User{ID: userID, FirstName: firstName},
-			Chat:      &telegram.Chat{ID: userID},
+			Chat:      &telegram.Chat{ID: userID, Type: "private"},
 			Text:      text,
 		},
 	}
