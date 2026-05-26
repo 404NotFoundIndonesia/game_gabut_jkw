@@ -69,7 +69,7 @@ func unoPlayButton() telegram.InlineKeyboardMarkup {
 // Non-wild playable cards → one result each.
 // Wild cards → four results (one per color) for single-tap color selection.
 // A "draw" result is always appended last.
-// If stickerMap is non-empty and has a file_id for the card, cached_sticker type is used.
+// If stickerMap is non-empty and has a file_id for the card, "sticker" type is used.
 func unoInlineResults(hand []uno.Card, top uno.Card, stickerMap UnoStickerMap) []telegram.InlineQueryResult {
 	colorEmoji := map[string]string{"red": "🔴", "blue": "🔵", "yellow": "🟡", "green": "🟢"}
 	colors := []string{"red", "blue", "yellow", "green"}
@@ -98,7 +98,7 @@ func unoInlineResults(hand []uno.Card, top uno.Card, stickerMap UnoStickerMap) [
 		fileID := stickerMap[unoCardKey(card)]
 		if fileID != "" {
 			results = append(results, telegram.InlineQueryResult{
-				Type:          "cached_sticker",
+				Type:          "sticker",
 				ID:            fmt.Sprintf("play:%d", i),
 				StickerFileID: fileID,
 			})
