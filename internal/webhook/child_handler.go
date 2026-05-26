@@ -472,7 +472,9 @@ func (h *ChildBotHandler) handleInlineQuery(ctx context.Context, botID uuid.UUID
 	top := state.DiscardPile[len(state.DiscardPile)-1]
 	results := unoInlineResults(hand, top, h.stickerMap)
 	slog.Info("child handler: inline query answering", "bot_id", botID, "user_id", iq.From.ID, "results", len(results))
-	_ = h.tgClient.AnswerInlineQuery(ctx, rawToken, iq.ID, results)
+	if err := h.tgClient.AnswerInlineQuery(ctx, rawToken, iq.ID, results); err != nil {
+		slog.Error("child handler: answerInlineQuery failed", "bot_id", botID, "user_id", iq.From.ID, "err", err)
+	}
 }
 
 // handleChosenInlineResult applies the move when a player selects a card.
