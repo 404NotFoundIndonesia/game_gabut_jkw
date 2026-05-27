@@ -2,20 +2,21 @@ package webhook
 
 import (
 	"fmt"
+	"html"
 
 	"github.com/404NFIDv2/bot-game-management/internal/telegram"
 )
 
 // ── Sambung Kata UI ───────────────────────────────────────────────────────────
 
-func skTurnText(playerName, lastWord string) string {
+func skTurnText(playerMention, lastWord string) string {
 	if lastWord == "" {
-		return fmt.Sprintf("📝 Sambung Kata!\n\n%s's turn — type any Indonesian word.", playerName)
+		return fmt.Sprintf("📝 Sambung Kata!\n\n%s's turn — type any Indonesian word.", playerMention)
 	}
 	lastLetter := skLastLetter(lastWord)
 	return fmt.Sprintf(
 		"📝 Sambung Kata!\n\nLast word: %s\nNext must start with: %s\n\n%s's turn — type your word in the chat!",
-		lastWord, lastLetter, playerName,
+		html.EscapeString(lastWord), lastLetter, playerMention,
 	)
 }
 
@@ -37,14 +38,14 @@ func tdTurnText(playerName string, round int) string {
 	return fmt.Sprintf("🎯 Round %d — %s's turn!\n\nChoose your fate:", round, playerName)
 }
 
-func tdQuestionText(playerName, choice, question string) string {
+func tdQuestionText(playerMention, choice, question string) string {
 	emoji := "📅"
 	if choice == "truth" {
 		emoji = "💬"
 	}
 	return fmt.Sprintf(
-		"%s %s chose *%s*!\n\nQuestion:\n%s\n\nType your answer in the chat.",
-		emoji, playerName, choice, question,
+		"%s %s chose <b>%s</b>!\n\nQuestion:\n%s\n\nType your answer in the chat.",
+		emoji, playerMention, html.EscapeString(choice), html.EscapeString(question),
 	)
 }
 

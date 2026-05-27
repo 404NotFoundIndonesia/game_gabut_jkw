@@ -48,6 +48,12 @@ type Client interface {
 	// AnswerInlineQuery responds to an inline_query update with a list of results.
 	// Pass nil or empty slice to return no results.
 	AnswerInlineQuery(ctx context.Context, botToken, queryID string, results []InlineQueryResult) error
+
+	// SendHTMLMessage sends a message with HTML parse_mode (for inline mentions, bold, etc.).
+	SendHTMLMessage(ctx context.Context, botToken string, chatID int64, html string) error
+
+	// SendHTMLMessageWithKeyboard sends an HTML-formatted message with an inline keyboard.
+	SendHTMLMessageWithKeyboard(ctx context.Context, botToken string, chatID int64, html string, keyboard InlineKeyboardMarkup) error
 }
 
 // InlineQueryResult is a single result in an answerInlineQuery response.
@@ -286,6 +292,31 @@ func (c *httpClient) EditMessageText(ctx context.Context, botToken string, chatI
 		payload["reply_markup"] = keyboard
 	}
 	_, err := c.callAPI(ctx, botToken, "editMessageText", payload)
+	return err
+}
+
+// ── SendHTMLMessage ───────────────────────────────────────────────────────────
+
+func (c *httpClient) SendHTMLMessage(ctx context.Context, botToken string, chatID int64, html string) error {
+	payload := map[string]any{
+		"chat_id":    chatID,
+		"text":       html,
+		"parse_mode": "HTML",
+	}
+	_, err := c.callAPI(ctx, botToken, "sendMessage", payload)
+	return err
+}
+
+// ── SendHTMLMessageWithKeyboard ───────────────────────────────────────────────
+
+func (c *httpClient) SendHTMLMessageWithKeyboard(ctx context.Context, botToken string, chatID int64, html string, keyboard InlineKeyboardMarkup) error {
+	payload := map[string]any{
+		"chat_id":      chatID,
+		"text":         html,
+		"parse_mode":   "HTML",
+		"reply_markup": keyboard,
+	}
+	_, err := c.callAPI(ctx, botToken, "sendMessage", payload)
 	return err
 }
 

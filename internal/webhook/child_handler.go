@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -288,7 +289,7 @@ func (h *ChildBotHandler) cmdJoin(ctx context.Context, botID uuid.UUID, chatID, 
 		h.childReply(ctx, bot, chatID, "❌ "+extractMsg(err))
 		return
 	}
-	h.childReply(ctx, bot, chatID, fmt.Sprintf("✅ %s joined! Players: %d", displayName, len(session.Players)))
+	h.childReplyHTML(ctx, bot, chatID, fmt.Sprintf("✅ %s joined! Players: %d", playerMention(displayName, userID), len(session.Players)))
 }
 
 func (h *ChildBotHandler) cmdStart(ctx context.Context, botID uuid.UUID, chatID, userID int64, bot *botdomain.Bot) {
@@ -331,9 +332,9 @@ func (h *ChildBotHandler) startUno(ctx context.Context, botID uuid.UUID, chatID 
 		GroupChatID: chatID,
 		SessionID:   session.ID,
 	}, h.sessionTTL)
-	playerName := playerDisplayName(session, currentPlayerID)
-	text := unoTurnText(state.DiscardPile[len(state.DiscardPile)-1], playerName, len(state.Hands[currentPlayerID]))
-	h.childSendWithKeyboard(ctx, bot, chatID, text, unoPlayButton())
+	mention := playerMention(playerDisplayName(session, currentPlayerID), currentPlayerID)
+	text := unoTurnText(state.DiscardPile[len(state.DiscardPile)-1], mention, len(state.Hands[currentPlayerID]))
+	h.childSendHTMLWithKeyboard(ctx, bot, chatID, text, unoPlayButton())
 }
 
 func (h *ChildBotHandler) startSambungKata(ctx context.Context, _ uuid.UUID, chatID int64, session *sessiondomain.GameSession, bot *botdomain.Bot) {
@@ -342,8 +343,9 @@ func (h *ChildBotHandler) startSambungKata(ctx context.Context, _ uuid.UUID, cha
 		h.childReply(ctx, bot, chatID, "🎮 Sambung Kata started!")
 		return
 	}
-	playerName := playerDisplayName(session, state.PlayerOrder[state.CurrentTurnIdx])
-	h.childReply(ctx, bot, chatID, skTurnText(playerName, state.LastWord))
+	currentID := state.PlayerOrder[state.CurrentTurnIdx]
+	mention := playerMention(playerDisplayName(session, currentID), currentID)
+	h.childReplyHTML(ctx, bot, chatID, skTurnText(mention, state.LastWord))
 }
 
 func (h *ChildBotHandler) startTruthOrDate(ctx context.Context, _ uuid.UUID, chatID int64, session *sessiondomain.GameSession, bot *botdomain.Bot) {
@@ -352,8 +354,9 @@ func (h *ChildBotHandler) startTruthOrDate(ctx context.Context, _ uuid.UUID, cha
 		h.childReply(ctx, bot, chatID, "🎮 Truth or Date started!")
 		return
 	}
-	playerName := playerDisplayName(session, state.PlayerOrder[state.CurrentTurnIdx])
-	h.childSendWithKeyboard(ctx, bot, chatID, tdTurnText(playerName, state.Round), tdChoiceKeyboard())
+	currentID := state.PlayerOrder[state.CurrentTurnIdx]
+	mention := playerMention(playerDisplayName(session, currentID), currentID)
+	h.childSendHTMLWithKeyboard(ctx, bot, chatID, tdTurnText(mention, state.Round), tdChoiceKeyboard())
 }
 
 func (h *ChildBotHandler) cmdMove(ctx context.Context, botID uuid.UUID, chatID, userID int64, args []string, bot *botdomain.Bot) {
@@ -527,18 +530,19 @@ func (h *ChildBotHandler) handleChosenInlineResult(ctx context.Context, botID uu
 func (h *ChildBotHandler) advanceTurn(ctx context.Context, botID uuid.UUID, tc TurnContext, result *sessionapp.MoveResult, bot *botdomain.Bot) {
 	session := result.Session
 	if session.Status == sessiondomain.StatusFinished {
-		var winnerName string
+		var winnerMention string
 		for _, ev := range result.Events {
 			if ev.Type == "PLAYER_WON" {
 				if id, ok := ev.Payload["player_id"].(float64); ok {
-					winnerName = playerDisplayName(session, int64(id))
+					pid := int64(id)
+					winnerMention = playerMention(playerDisplayName(session, pid), pid)
 				}
 			}
 		}
-		if winnerName == "" {
-			winnerName = "Someone"
+		if winnerMention == "" {
+			winnerMention = "Someone"
 		}
-		h.childReply(ctx, bot, tc.GroupChatID, unoGameOverText(winnerName)+"\n\nFinal scores:\n"+finalScores(session))
+		h.childReplyHTML(ctx, bot, tc.GroupChatID, unoGameOverText(winnerMention)+"\n\nFinal scores:\n"+finalScores(session))
 		_ = h.chatIndex.Delete(ctx, botID, tc.GroupChatID)
 		return
 	}
@@ -552,10 +556,10 @@ func (h *ChildBotHandler) advanceTurn(ctx context.Context, botID uuid.UUID, tc T
 		GroupChatID: tc.GroupChatID,
 		SessionID:   tc.SessionID,
 	}, h.sessionTTL)
-	playerName := playerDisplayName(session, nextPlayerID)
+	mention := playerMention(playerDisplayName(session, nextPlayerID), nextPlayerID)
 	handSize := len(state.Hands[nextPlayerID])
-	text := unoTurnText(state.DiscardPile[len(state.DiscardPile)-1], playerName, handSize)
-	h.childSendWithKeyboard(ctx, bot, tc.GroupChatID, text, unoPlayButton())
+	text := unoTurnText(state.DiscardPile[len(state.DiscardPile)-1], mention, handSize)
+	h.childSendHTMLWithKeyboard(ctx, bot, tc.GroupChatID, text, unoPlayButton())
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -597,6 +601,33 @@ func (h *ChildBotHandler) childEditMessage(ctx context.Context, bot *botdomain.B
 	if err := h.tgClient.EditMessageText(ctx, rawToken, chatID, msgID, text, kb); err != nil {
 		slog.Error("child handler: edit failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
 	}
+}
+
+func (h *ChildBotHandler) childReplyHTML(ctx context.Context, bot *botdomain.Bot, chatID int64, htmlText string) {
+	rawToken, err := h.childToken(bot)
+	if err != nil {
+		slog.Error("child handler: decrypt failed", "bot_id", bot.ID, "err", err)
+		return
+	}
+	if err := h.tgClient.SendHTMLMessage(ctx, rawToken, chatID, htmlText); err != nil {
+		slog.Error("child handler: send html failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
+	}
+}
+
+func (h *ChildBotHandler) childSendHTMLWithKeyboard(ctx context.Context, bot *botdomain.Bot, chatID int64, htmlText string, kb telegram.InlineKeyboardMarkup) {
+	rawToken, err := h.childToken(bot)
+	if err != nil {
+		slog.Error("child handler: decrypt failed", "bot_id", bot.ID, "err", err)
+		return
+	}
+	if err := h.tgClient.SendHTMLMessageWithKeyboard(ctx, rawToken, chatID, htmlText, kb); err != nil {
+		slog.Error("child handler: send html keyboard failed", "bot_id", bot.ID, "chat_id", chatID, "err", err)
+	}
+}
+
+// playerMention returns an HTML inline mention for the given Telegram user.
+func playerMention(displayName string, userID int64) string {
+	return fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, userID, html.EscapeString(displayName))
 }
 
 func (h *ChildBotHandler) childAnswerCallback(ctx context.Context, bot *botdomain.Bot, callbackQueryID string) error {
@@ -700,8 +731,8 @@ func (h *ChildBotHandler) cbTDChoice(ctx context.Context, botID uuid.UUID, group
 	if err != nil {
 		return
 	}
-	playerName := playerDisplayName(result.Session, userID)
-	h.childSendWithKeyboard(ctx, bot, groupChatID, tdQuestionText(playerName, choice, state.CurrentQuestion), tdSkipKeyboard())
+	mention := playerMention(playerDisplayName(result.Session, userID), userID)
+	h.childSendHTMLWithKeyboard(ctx, bot, groupChatID, tdQuestionText(mention, choice, state.CurrentQuestion), tdSkipKeyboard())
 }
 
 func (h *ChildBotHandler) cbTDSkip(ctx context.Context, botID uuid.UUID, groupChatID, groupMsgID, userID int64, callbackID string, bot *botdomain.Bot) {
@@ -728,18 +759,19 @@ func (h *ChildBotHandler) advanceTurnSK(ctx context.Context, botID uuid.UUID, gr
 	session := result.Session
 
 	if session.Status == sessiondomain.StatusFinished {
-		var winnerName string
+		var winnerMention string
 		for _, ev := range result.Events {
 			if ev.Type == "GAME_OVER" {
 				if id, ok := ev.Payload["winner_id"].(float64); ok {
-					winnerName = playerDisplayName(session, int64(id))
+					pid := int64(id)
+					winnerMention = playerMention(playerDisplayName(session, pid), pid)
 				}
 			}
 		}
-		if winnerName == "" {
-			winnerName = "Someone"
+		if winnerMention == "" {
+			winnerMention = "Someone"
 		}
-		h.childReply(ctx, bot, groupChatID, skGameOverText(winnerName)+"\n\nFinal scores:\n"+finalScores(session))
+		h.childReplyHTML(ctx, bot, groupChatID, skGameOverText(winnerMention)+"\n\nFinal scores:\n"+finalScores(session))
 		_ = h.chatIndex.Delete(ctx, botID, groupChatID)
 		return
 	}
@@ -754,21 +786,23 @@ func (h *ChildBotHandler) advanceTurnSK(ctx context.Context, botID uuid.UUID, gr
 		switch ev.Type {
 		case "WORD_REJECTED":
 			if id, ok := ev.Payload["player_id"].(float64); ok {
-				name := playerDisplayName(session, int64(id))
+				pid := int64(id)
+				mention := playerMention(playerDisplayName(session, pid), pid)
 				reason, _ := ev.Payload["reason"].(string)
-				fmt.Fprintf(&sb, "❌ %s's word rejected: %s\n", name, reason)
+				fmt.Fprintf(&sb, "❌ %s's word rejected: %s\n", mention, html.EscapeString(reason))
 			}
 		case "PLAYER_ELIMINATED":
 			if id, ok := ev.Payload["player_id"].(float64); ok {
-				name := playerDisplayName(session, int64(id))
-				fmt.Fprintf(&sb, "🚫 %s eliminated!\n", name)
+				pid := int64(id)
+				mention := playerMention(playerDisplayName(session, pid), pid)
+				fmt.Fprintf(&sb, "🚫 %s eliminated!\n", mention)
 			}
 		}
 	}
 
 	currentPlayerID := state.PlayerOrder[state.CurrentTurnIdx]
-	playerName := playerDisplayName(session, currentPlayerID)
-	h.childReply(ctx, bot, groupChatID, sb.String()+skTurnText(playerName, state.LastWord))
+	mention := playerMention(playerDisplayName(session, currentPlayerID), currentPlayerID)
+	h.childReplyHTML(ctx, bot, groupChatID, sb.String()+skTurnText(mention, state.LastWord))
 }
 
 // ── Truth or Date advance ─────────────────────────────────────────────────────
@@ -780,8 +814,8 @@ func (h *ChildBotHandler) advanceTurnTD(ctx context.Context, _ uuid.UUID, groupC
 		return
 	}
 	currentPlayerID := state.PlayerOrder[state.CurrentTurnIdx]
-	playerName := playerDisplayName(session, currentPlayerID)
-	h.childSendWithKeyboard(ctx, bot, groupChatID, tdTurnText(playerName, state.Round), tdChoiceKeyboard())
+	mention := playerMention(playerDisplayName(session, currentPlayerID), currentPlayerID)
+	h.childSendHTMLWithKeyboard(ctx, bot, groupChatID, tdTurnText(mention, state.Round), tdChoiceKeyboard())
 }
 
 // ── Sambung Kata / Truth or Date state parsers ────────────────────────────────

@@ -136,6 +136,16 @@ func (s *stubTGClient) EditMessageText(_ context.Context, _ string, _, _ int64, 
 func (s *stubTGClient) AnswerInlineQuery(_ context.Context, _, _ string, _ []telegram.InlineQueryResult) error {
 	return nil
 }
+func (s *stubTGClient) SendHTMLMessage(_ context.Context, _ string, _ int64, text string) error {
+	s.sendCalled++
+	s.lastMessage = text
+	return nil
+}
+func (s *stubTGClient) SendHTMLMessageWithKeyboard(_ context.Context, _ string, _ int64, text string, _ telegram.InlineKeyboardMarkup) error {
+	s.sendCalled++
+	s.lastMessage = text
+	return nil
+}
 
 // ── test helpers ──────────────────────────────────────────────────────────────
 

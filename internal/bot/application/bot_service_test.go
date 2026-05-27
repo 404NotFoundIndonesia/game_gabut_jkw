@@ -125,6 +125,12 @@ func (f *fakeTGClient) EditMessageText(_ context.Context, _ string, _, _ int64, 
 func (f *fakeTGClient) AnswerInlineQuery(_ context.Context, _, _ string, _ []telegram.InlineQueryResult) error {
 	return f.err
 }
+func (f *fakeTGClient) SendHTMLMessage(_ context.Context, _ string, _ int64, _ string) error {
+	return f.err
+}
+func (f *fakeTGClient) SendHTMLMessageWithKeyboard(_ context.Context, _ string, _ int64, _ string, _ telegram.InlineKeyboardMarkup) error {
+	return f.err
+}
 
 func newService(repo *fakeBotRepo, tgID int64, tgErr error) *application.BotService {
 	return application.NewBotService(
@@ -330,6 +336,12 @@ func (f *fakeTGClientWithWebhook) EditMessageText(_ context.Context, _ string, _
 	return nil
 }
 func (f *fakeTGClientWithWebhook) AnswerInlineQuery(_ context.Context, _, _ string, _ []telegram.InlineQueryResult) error {
+	return nil
+}
+func (f *fakeTGClientWithWebhook) SendHTMLMessage(_ context.Context, _ string, _ int64, _ string) error {
+	return nil
+}
+func (f *fakeTGClientWithWebhook) SendHTMLMessageWithKeyboard(_ context.Context, _ string, _ int64, _ string, _ telegram.InlineKeyboardMarkup) error {
 	return nil
 }
 

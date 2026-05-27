@@ -128,15 +128,15 @@ func unoInlineResults(hand []uno.Card, top uno.Card, stickerMap UnoStickerMap) [
 	return results
 }
 
-// unoTurnText builds the group message shown on each turn.
-func unoTurnText(topCard uno.Card, playerName string, handSize int) string {
+// unoTurnText builds the group message shown on each turn (HTML parse_mode).
+func unoTurnText(topCard uno.Card, playerMention string, handSize int) string {
 	return fmt.Sprintf(
-		"🎮 *Uno* — Top card: %s\n\n👤 It's *%s*'s turn! (%d cards)\nTap below to pick a card.",
-		unoCardEmoji(topCard), playerName, handSize,
+		"🎮 <b>Uno</b> — Top card: %s\n\n👤 It's %s's turn! (%d cards)\nTap below to pick a card.",
+		unoCardEmoji(topCard), playerMention, handSize,
 	)
 }
 
-// unoGameOverText builds the group message shown when the game ends.
-func unoGameOverText(winnerName string) string {
-	return fmt.Sprintf("🏆 *%s* wins! Game over.", winnerName)
+// unoGameOverText builds the group message shown when the game ends (HTML parse_mode).
+func unoGameOverText(winnerMention string) string {
+	return fmt.Sprintf("🏆 %s wins! Game over.", winnerMention)
 }
