@@ -14,6 +14,7 @@ import (
 	botdomain "github.com/404NFIDv2/bot-game-management/internal/bot/domain"
 	gamedomain "github.com/404NFIDv2/bot-game-management/internal/game/domain"
 	lbdomain "github.com/404NFIDv2/bot-game-management/internal/leaderboard/domain"
+	sessiondomain "github.com/404NFIDv2/bot-game-management/internal/session/domain"
 	"github.com/404NFIDv2/bot-game-management/internal/telegram"
 	apperrors "github.com/404NFIDv2/bot-game-management/pkg/errors"
 	"github.com/404NFIDv2/bot-game-management/pkg/pagination"
@@ -45,18 +46,24 @@ type MainLeaderboardSvc interface {
 	GetGlobal(ctx context.Context, params pagination.Params) (*lbdomain.Leaderboard, error)
 }
 
+// MainSessionSvc is the SessionService subset needed by the main handler.
+type MainSessionSvc interface {
+	ListSessions(ctx context.Context, botID uuid.UUID, filter sessiondomain.SessionFilter, limit, offset int) ([]*sessiondomain.GameSession, int, error)
+}
+
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 // MainBotHandler handles Telegram updates sent to the main admin bot webhook.
 type MainBotHandler struct {
-	botSvc    MainBotSvc
-	gameSvc   MainGameSvc
-	lbSvc     MainLeaderboardSvc
-	convStore ConversationStore
-	tgClient  telegram.Client
-	mainToken string
-	adminIDs  map[int64]struct{}
-	convTTL   time.Duration
+	botSvc     MainBotSvc
+	gameSvc    MainGameSvc
+	lbSvc      MainLeaderboardSvc
+	sessionSvc MainSessionSvc
+	convStore  ConversationStore
+	tgClient   telegram.Client
+	mainToken  string
+	adminIDs   map[int64]struct{}
+	convTTL    time.Duration
 }
 
 // NewMainBotHandler constructs the handler.
@@ -64,6 +71,7 @@ func NewMainBotHandler(
 	botSvc MainBotSvc,
 	gameSvc MainGameSvc,
 	lbSvc MainLeaderboardSvc,
+	sessionSvc MainSessionSvc,
 	convStore ConversationStore,
 	tgClient telegram.Client,
 	mainToken string,
@@ -75,14 +83,15 @@ func NewMainBotHandler(
 		ids[id] = struct{}{}
 	}
 	return &MainBotHandler{
-		botSvc:    botSvc,
-		gameSvc:   gameSvc,
-		lbSvc:     lbSvc,
-		convStore: convStore,
-		tgClient:  tgClient,
-		mainToken: mainToken,
-		adminIDs:  ids,
-		convTTL:   convTTL,
+		botSvc:     botSvc,
+		gameSvc:    gameSvc,
+		lbSvc:      lbSvc,
+		sessionSvc: sessionSvc,
+		convStore:  convStore,
+		tgClient:   tgClient,
+		mainToken:  mainToken,
+		adminIDs:   ids,
+		convTTL:    convTTL,
 	}
 }
 
@@ -144,6 +153,10 @@ func (h *MainBotHandler) handleUpdate(c *fiber.Ctx) error {
 		h.cmdRemoveGameMenu(ctx, chatID)
 	case "/leaderboard":
 		h.cmdLeaderboardMenu(ctx, chatID, args)
+	case "/status":
+		h.cmdStatus(ctx, chatID)
+	case "/listactivesessions":
+		h.cmdListActiveSessions(ctx, chatID, args)
 	default:
 		if chatType == "private" {
 			h.reply(ctx, chatID, mainHelpText())
@@ -554,6 +567,52 @@ func (h *MainBotHandler) cbLeaderboard(ctx context.Context, chatID, msgID int64,
 		fmt.Sprintf("🏆 Bot Leaderboard:\n\n%s", formatLeaderboard(lb)), nil)
 }
 
+func (h *MainBotHandler) cmdStatus(ctx context.Context, chatID int64) {
+	bots, total, err := h.botSvc.ListBots(ctx, botdomain.BotFilter{}, 1000, 0)
+	if err != nil {
+		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+		return
+	}
+	active := 0
+	for _, b := range bots {
+		if b.Active {
+			active++
+		}
+	}
+	h.reply(ctx, chatID, fmt.Sprintf(
+		"📊 System Status\n\nBots: %d total, %d active\n\nUse /listactivesessions <bot_id> to see live sessions.",
+		total, active,
+	))
+}
+
+func (h *MainBotHandler) cmdListActiveSessions(ctx context.Context, chatID int64, args []string) {
+	if len(args) == 0 {
+		h.reply(ctx, chatID, "Usage: /listactivesessions <bot_id>")
+		return
+	}
+	botID, err := uuid.Parse(args[0])
+	if err != nil {
+		h.reply(ctx, chatID, "❌ Invalid bot ID.")
+		return
+	}
+	status := sessiondomain.StatusInProgress
+	sessions, _, err := h.sessionSvc.ListSessions(ctx, botID, sessiondomain.SessionFilter{Status: &status}, 20, 0)
+	if err != nil {
+		h.reply(ctx, chatID, "❌ "+extractMsg(err))
+		return
+	}
+	if len(sessions) == 0 {
+		h.reply(ctx, chatID, "No active sessions for this bot.")
+		return
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "🎮 Active sessions for bot %s:\n\n", botID)
+	for _, s := range sessions {
+		fmt.Fprintf(&sb, "• %s — %d players, chat %d\n", s.ID, len(s.Players), s.ChatID)
+	}
+	h.reply(ctx, chatID, sb.String())
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func (h *MainBotHandler) reply(ctx context.Context, chatID int64, text string) {
@@ -678,5 +737,7 @@ func mainHelpText() string {
 /assigngame — assign a game to a bot (pick from list)
 /removegame — remove a game from a bot (pick from list)
 /leaderboard — show leaderboard (pick global or per-bot)
-/leaderboard global — global leaderboard directly`
+/leaderboard global — global leaderboard
+/status — system overview (bots, sessions)
+/listactivesessions <bot_id> — active sessions for a bot`
 }

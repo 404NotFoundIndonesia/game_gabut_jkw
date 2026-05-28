@@ -121,9 +121,12 @@ func main() {
 	botSvc := application.NewBotService(botRepo, tgClient, cfg.BotTokenEncryptionKey, sessionSvc, cfg.WebhookBaseURL, cfg.WebhookSecretToken)
 	botGameSvc := gameapp.NewBotGameService(botRepo, gameRepo, botGameRepo)
 
-	// ── Session archival job ──────────────────────────────────────────────────
+	// ── Session archival + timeout jobs ──────────────────────────────────────
 	archivalJob := sessionapp.NewArchivalJob(sessionRepo, sessionCache, time.Duration(cfg.SessionTTLHours)*time.Hour)
 	archivalJob.Start(ctx, time.Hour)
+
+	timeoutJob := sessionapp.NewTimeoutJob(sessionRepo, sessionSvc, time.Duration(cfg.SessionInactivityMinutes)*time.Minute)
+	timeoutJob.Start(ctx, 10*time.Minute)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
 	app := fiber.New(fiber.Config{

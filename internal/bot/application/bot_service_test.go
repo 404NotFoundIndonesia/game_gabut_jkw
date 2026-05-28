@@ -132,6 +132,10 @@ func (f *fakeTGClient) SendHTMLMessageWithKeyboard(_ context.Context, _ string, 
 	return f.err
 }
 
+func (f *fakeTGClient) SetCommands(_ context.Context, _ string, _ []telegram.BotCommand) error {
+	return f.err
+}
+
 func newService(repo *fakeBotRepo, tgID int64, tgErr error) *application.BotService {
 	return application.NewBotService(
 		repo,
@@ -342,6 +346,9 @@ func (f *fakeTGClientWithWebhook) SendHTMLMessage(_ context.Context, _ string, _
 	return nil
 }
 func (f *fakeTGClientWithWebhook) SendHTMLMessageWithKeyboard(_ context.Context, _ string, _ int64, _ string, _ telegram.InlineKeyboardMarkup) error {
+	return nil
+}
+func (f *fakeTGClientWithWebhook) SetCommands(_ context.Context, _ string, _ []telegram.BotCommand) error {
 	return nil
 }
 

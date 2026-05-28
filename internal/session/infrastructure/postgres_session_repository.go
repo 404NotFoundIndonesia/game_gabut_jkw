@@ -34,15 +34,16 @@ func (r *PostgresSessionRepository) Save(ctx context.Context, s *domain.GameSess
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO game_sessions
-			(id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			(id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (id) DO UPDATE SET
 			status     = EXCLUDED.status,
 			state      = EXCLUDED.state,
 			started_at = EXCLUDED.started_at,
-			ended_at   = EXCLUDED.ended_at
+			ended_at   = EXCLUDED.ended_at,
+			updated_at = EXCLUDED.updated_at
 	`, s.ID, s.BotID, s.GameID, s.ChatID, string(s.Status), []byte(s.State),
-		s.StartedAt, s.EndedAt, s.CreatedAt)
+		s.StartedAt, s.EndedAt, s.CreatedAt, s.UpdatedAt)
 	if err != nil {
 		return apperrors.Internal("failed to upsert session").WithCause(err)
 	}
@@ -67,7 +68,7 @@ func (r *PostgresSessionRepository) Save(ctx context.Context, s *domain.GameSess
 
 func (r *PostgresSessionRepository) FindByID(ctx context.Context, id uuid.UUID) (*domain.GameSession, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at
+		SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at, updated_at
 		FROM game_sessions WHERE id = $1
 	`, id)
 
@@ -116,7 +117,7 @@ func (r *PostgresSessionRepository) FindByBotID(
 
 	listArgs := append(args, limit, offset)
 	rows, err := r.pool.Query(ctx,
-		"SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at "+
+		"SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at, updated_at "+
 			"FROM game_sessions WHERE "+where+
 			fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", n, n+1),
 		listArgs...,
@@ -147,7 +148,7 @@ func (r *PostgresSessionRepository) FindByBotID(
 
 func (r *PostgresSessionRepository) FindActiveByChatID(ctx context.Context, botID uuid.UUID, chatID int64) (*domain.GameSession, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at
+		SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at, updated_at
 		FROM game_sessions
 		WHERE bot_id = $1 AND chat_id = $2 AND status IN ('CREATED', 'WAITING', 'IN_PROGRESS')
 		ORDER BY created_at DESC LIMIT 1
@@ -170,7 +171,7 @@ func (r *PostgresSessionRepository) FindActiveByChatID(ctx context.Context, botI
 
 func (r *PostgresSessionRepository) UpdateState(ctx context.Context, id uuid.UUID, state json.RawMessage) error {
 	_, err := r.pool.Exec(ctx,
-		`UPDATE game_sessions SET state = $1 WHERE id = $2`, []byte(state), id)
+		`UPDATE game_sessions SET state = $1, updated_at = NOW() WHERE id = $2`, []byte(state), id)
 	if err != nil {
 		return apperrors.Internal("failed to update session state").WithCause(err)
 	}
@@ -180,7 +181,7 @@ func (r *PostgresSessionRepository) UpdateState(ctx context.Context, id uuid.UUI
 // FindFinishedBefore returns FINISHED sessions whose ended_at is before the given threshold.
 func (r *PostgresSessionRepository) FindFinishedBefore(ctx context.Context, threshold time.Time, limit int) ([]*domain.GameSession, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at
+		SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at, updated_at
 		FROM game_sessions
 		WHERE status = 'FINISHED' AND ended_at < $1
 		ORDER BY ended_at ASC
@@ -188,6 +189,31 @@ func (r *PostgresSessionRepository) FindFinishedBefore(ctx context.Context, thre
 	`, threshold, limit)
 	if err != nil {
 		return nil, apperrors.Internal("failed to query finished sessions").WithCause(err)
+	}
+	defer rows.Close()
+
+	var sessions []*domain.GameSession
+	for rows.Next() {
+		s, scanErr := scanSession(rows)
+		if scanErr != nil {
+			return nil, apperrors.Internal("failed to scan session").WithCause(scanErr)
+		}
+		sessions = append(sessions, s)
+	}
+	return sessions, nil
+}
+
+// FindInProgressOlderThan returns IN_PROGRESS sessions whose updated_at is before threshold.
+func (r *PostgresSessionRepository) FindInProgressOlderThan(ctx context.Context, threshold time.Time, limit int) ([]*domain.GameSession, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, bot_id, game_id, chat_id, status, state, started_at, ended_at, created_at, updated_at
+		FROM game_sessions
+		WHERE status = 'IN_PROGRESS' AND updated_at < $1
+		ORDER BY updated_at ASC
+		LIMIT $2
+	`, threshold, limit)
+	if err != nil {
+		return nil, apperrors.Internal("failed to query timed-out sessions").WithCause(err)
 	}
 	defer rows.Close()
 
@@ -235,7 +261,7 @@ func scanSession(row rowScanner) (*domain.GameSession, error) {
 	var status string
 	var state []byte
 	err := row.Scan(&s.ID, &s.BotID, &s.GameID, &s.ChatID, &status, &state,
-		&s.StartedAt, &s.EndedAt, &s.CreatedAt)
+		&s.StartedAt, &s.EndedAt, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

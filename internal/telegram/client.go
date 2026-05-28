@@ -9,6 +9,12 @@ import (
 	"time"
 )
 
+// BotCommand represents a single Telegram bot command entry for setMyCommands.
+type BotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
 // Client is the Telegram Bot API interface used by this application.
 type Client interface {
 	// GetBotID calls getMe and returns the bot's numeric user ID.
@@ -70,6 +76,8 @@ type InlineQueryResult struct {
 // InputMessageContent is the text content sent when an article result is chosen.
 type InputMessageContent struct {
 	MessageText string `json:"message_text"`
+	// SetCommands registers the bot's command list with BotFather.
+	SetCommands(ctx context.Context, botToken string, commands []BotCommand) error
 }
 
 type httpClient struct {
@@ -333,5 +341,13 @@ func (c *httpClient) AnswerInlineQuery(ctx context.Context, botToken, queryID st
 		"is_personal":     true,
 	}
 	_, err := c.callAPI(ctx, botToken, "answerInlineQuery", payload)
+	return err
+}
+
+// ── SetCommands ───────────────────────────────────────────────────────────────
+
+func (c *httpClient) SetCommands(ctx context.Context, botToken string, commands []BotCommand) error {
+	payload := map[string]any{"commands": commands}
+	_, err := c.callAPI(ctx, botToken, "setMyCommands", payload)
 	return err
 }

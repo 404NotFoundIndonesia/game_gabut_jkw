@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 
@@ -181,6 +182,12 @@ func (s *BotService) RegisterBotWithWebhook(ctx context.Context, name, rawToken 
 		_ = s.repo.Delete(ctx, bot.ID)
 		return nil, apperrors.Internal("failed to register Telegram webhook: " + err.Error())
 	}
+
+	// Best-effort: register bot commands with BotFather.
+	if err := s.tgClient.SetCommands(ctx, rawToken, childBotCommands()); err != nil {
+		slog.Warn("RegisterBotWithWebhook: failed to set bot commands", "bot_id", bot.ID, "err", err)
+	}
+
 	return bot, nil
 }
 
@@ -232,11 +239,60 @@ func (s *BotService) ReactivateBotWithWebhook(ctx context.Context, id uuid.UUID)
 		_ = s.repo.Save(ctx, bot)
 		return nil, apperrors.Internal("failed to re-register Telegram webhook: " + err.Error())
 	}
+
+	// Best-effort: restore bot commands with BotFather.
+	if err := s.tgClient.SetCommands(ctx, rawToken, childBotCommands()); err != nil {
+		slog.Warn("ReactivateBotWithWebhook: failed to set bot commands", "bot_id", bot.ID, "err", err)
+	}
+
 	return bot, nil
+}
+
+// ReregisterAllChildWebhooks re-registers webhooks for all active child bots.
+// Called at startup to recover from missed webhook registrations.
+func (s *BotService) ReregisterAllChildWebhooks(ctx context.Context) {
+	active := true
+	bots, _, err := s.repo.FindAll(ctx, domain.BotFilter{Active: &active}, 1000, 0)
+	if err != nil {
+		slog.Error("ReregisterAllChildWebhooks: failed to list bots", "err", err)
+		return
+	}
+	for _, bot := range bots {
+		rawToken, err := crypto.Decrypt(s.cryptoKey, bot.Token.Ciphertext())
+		if err != nil {
+			slog.Error("ReregisterAllChildWebhooks: failed to decrypt token", "bot_id", bot.ID, "err", err)
+			continue
+		}
+		webhookURL := s.childWebhookURL(bot.ID.String())
+		if err := s.tgClient.SetWebhook(ctx, rawToken, webhookURL, s.webhookSecret); err != nil {
+			slog.Error("ReregisterAllChildWebhooks: failed to set webhook", "bot_id", bot.ID, "err", err)
+		} else {
+			slog.Info("ReregisterAllChildWebhooks: webhook set", "bot_id", bot.ID)
+		}
+		// Best-effort command list sync.
+		if err := s.tgClient.SetCommands(ctx, rawToken, childBotCommands()); err != nil {
+			slog.Warn("ReregisterAllChildWebhooks: failed to set commands", "bot_id", bot.ID, "err", err)
+		}
+	}
 }
 
 func (s *BotService) childWebhookURL(botID string) string {
 	return s.webhookBaseURL + "/telegram/child/" + botID + "/webhook"
+}
+
+// childBotCommands returns the standard command list registered with BotFather for child bots.
+func childBotCommands() []telegram.BotCommand {
+	return []telegram.BotCommand{
+		{Command: "newgame", Description: "Start a new game (e.g. /newgame uno)"},
+		{Command: "join", Description: "Join the active game in this chat"},
+		{Command: "start", Description: "Start the game (host only)"},
+		{Command: "move", Description: "Submit a move (e.g. /move draw or /move {\"action\":\"play\",\"card\":\"R5\"})"},
+		{Command: "state", Description: "Show current game state and scores"},
+		{Command: "end", Description: "End the current game"},
+		{Command: "leaderboard", Description: "Show this bot's leaderboard"},
+		{Command: "mystats", Description: "Show your personal stats"},
+		{Command: "history", Description: "Show recent finished games in this chat"},
+	}
 }
 
 // hashToken returns the SHA-256 hex digest of a raw bot token.

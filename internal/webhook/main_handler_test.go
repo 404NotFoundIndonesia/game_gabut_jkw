@@ -16,6 +16,7 @@ import (
 	botdomain "github.com/404NFIDv2/bot-game-management/internal/bot/domain"
 	gamedomain "github.com/404NFIDv2/bot-game-management/internal/game/domain"
 	lbdomain "github.com/404NFIDv2/bot-game-management/internal/leaderboard/domain"
+	sessiondomain "github.com/404NFIDv2/bot-game-management/internal/session/domain"
 	"github.com/404NFIDv2/bot-game-management/internal/telegram"
 	"github.com/404NFIDv2/bot-game-management/internal/webhook"
 	apperrors "github.com/404NFIDv2/bot-game-management/pkg/errors"
@@ -146,6 +147,9 @@ func (s *stubTGClient) SendHTMLMessageWithKeyboard(_ context.Context, _ string, 
 	s.lastMessage = text
 	return nil
 }
+func (s *stubTGClient) SetCommands(_ context.Context, _ string, _ []telegram.BotCommand) error {
+	return nil
+}
 
 // ── test helpers ──────────────────────────────────────────────────────────────
 
@@ -154,10 +158,17 @@ const (
 	mainTestSecret        = "test-secret"
 )
 
+type stubMainSessionSvc struct{}
+
+func (s *stubMainSessionSvc) ListSessions(_ context.Context, _ uuid.UUID, _ sessiondomain.SessionFilter, _, _ int) ([]*sessiondomain.GameSession, int, error) {
+	return nil, 0, nil
+}
+
 func newMainApp(botSvc webhook.MainBotSvc, gameSvc webhook.MainGameSvc, lbSvc webhook.MainLeaderboardSvc, tgClient *stubTGClient) *fiber.App {
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	h := webhook.NewMainBotHandler(
 		botSvc, gameSvc, lbSvc,
+		&stubMainSessionSvc{},
 		newStubConvStore(),
 		tgClient,
 		"main-token",

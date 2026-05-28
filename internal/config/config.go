@@ -57,11 +57,12 @@ type Config struct {
 	SessionTTLHours int
 
 	// Telegram webhook integration (Phase 6)
-	MainBotToken        string
-	TelegramAdminIDs    []int64
-	WebhookBaseURL      string
-	WebhookSecretToken  string
-	ConvStateTTLMinutes int
+	MainBotToken             string
+	TelegramAdminIDs         []int64
+	WebhookBaseURL           string
+	WebhookSecretToken       string
+	ConvStateTTLMinutes      int
+	SessionInactivityMinutes int
 }
 
 // Load reads all env vars and returns a validated Config.
@@ -90,7 +91,8 @@ func Load() (*Config, error) {
 		TelegramAdminIDs:      adminIDs,
 		WebhookBaseURL:        webhookBase,
 		WebhookSecretToken:    os.Getenv("WEBHOOK_SECRET_TOKEN"),
-		ConvStateTTLMinutes:   getenvInt("CONV_STATE_TTL_MINUTES", 10),
+		ConvStateTTLMinutes:      getenvInt("CONV_STATE_TTL_MINUTES", 10),
+		SessionInactivityMinutes: getenvInt("SESSION_INACTIVITY_MINUTES", 120),
 	}
 
 	return cfg, cfg.validate()

@@ -107,6 +107,10 @@ func (f *fakeSessionRepo) FindFinishedBefore(_ context.Context, _ time.Time, _ i
 	return nil, nil
 }
 
+func (f *fakeSessionRepo) FindInProgressOlderThan(_ context.Context, _ time.Time, _ int) ([]*domain.GameSession, error) {
+	return nil, nil
+}
+
 type fakeStateCache struct {
 	states map[uuid.UUID]json.RawMessage
 }

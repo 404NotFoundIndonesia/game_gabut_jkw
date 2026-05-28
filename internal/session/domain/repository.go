@@ -23,4 +23,6 @@ type SessionRepository interface {
 	UpdateState(ctx context.Context, id uuid.UUID, state json.RawMessage) error
 	// FindFinishedBefore returns FINISHED sessions whose ended_at is before the given threshold.
 	FindFinishedBefore(ctx context.Context, threshold time.Time, limit int) ([]*GameSession, error)
+	// FindInProgressOlderThan returns IN_PROGRESS sessions whose updated_at is before threshold.
+	FindInProgressOlderThan(ctx context.Context, threshold time.Time, limit int) ([]*GameSession, error)
 }

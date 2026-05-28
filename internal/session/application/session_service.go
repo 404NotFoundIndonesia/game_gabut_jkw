@@ -298,6 +298,9 @@ func (s *SessionService) SubmitMove(ctx context.Context, botID, sessionID uuid.U
 	}
 	metrics.GameMovesTotal.WithLabelValues(string(game.Slug)).Inc()
 
+	// Inject a synthetic TURN_CHANGED event when the active player changes.
+	events = appendTurnChangedEvent(events, state, newState, session.Players)
+
 	// Atomic write: Redis first, then Postgres. Roll back Redis on DB failure.
 	if err := s.cache.SetState(ctx, session.ID, newState, s.sessionTTL); err != nil {
 		return nil, err
@@ -414,6 +417,45 @@ func (s *SessionService) loadState(ctx context.Context, session *domain.GameSess
 	// Cache miss: repopulate from DB snapshot on the session struct.
 	_ = s.cache.SetState(ctx, session.ID, session.State, s.sessionTTL)
 	return session.State, nil
+}
+
+// turnState is used to detect turn changes across game engines.
+// All three engines (Uno, SambungKata, TruthOrDate) use these same field names.
+type turnState struct {
+	CurrentTurnIdx int     `json:"current_turn_idx"`
+	PlayerOrder    []int64 `json:"player_order"`
+}
+
+// appendTurnChangedEvent appends a synthetic TURN_CHANGED event when the active
+// player changes between oldState and newState. The event carries player_id and
+// display_name so the webhook handler can notify the chat without extra DB queries.
+func appendTurnChangedEvent(events []games.Event, oldState, newState json.RawMessage, players []domain.PlayerSession) []games.Event {
+	var before, after turnState
+	if json.Unmarshal(oldState, &before) != nil || json.Unmarshal(newState, &after) != nil {
+		return events
+	}
+	if before.CurrentTurnIdx == after.CurrentTurnIdx || len(after.PlayerOrder) == 0 {
+		return events
+	}
+	idx := after.CurrentTurnIdx % len(after.PlayerOrder)
+	if idx < 0 {
+		idx += len(after.PlayerOrder)
+	}
+	nextID := after.PlayerOrder[idx]
+	var displayName string
+	for _, p := range players {
+		if p.TelegramUserID == nextID {
+			displayName = p.DisplayName
+			break
+		}
+	}
+	return append(events, games.Event{
+		Type: "TURN_CHANGED",
+		Payload: map[string]any{
+			"player_id":    nextID,
+			"display_name": displayName,
+		},
+	})
 }
 
 func (s *SessionService) finishSession(ctx context.Context, session *domain.GameSession, result games.Result) error {

@@ -42,10 +42,12 @@ type GameSession struct {
 	StartedAt *time.Time      `json:"started_at,omitempty"`
 	EndedAt   *time.Time      `json:"ended_at,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 // NewGameSession constructs a new session in CREATED status with empty game state.
 func NewGameSession(botID, gameID uuid.UUID, chatID int64) *GameSession {
+	now := time.Now().UTC()
 	return &GameSession{
 		ID:        uuid.New(),
 		BotID:     botID,
@@ -54,7 +56,8 @@ func NewGameSession(botID, gameID uuid.UUID, chatID int64) *GameSession {
 		Status:    StatusCreated,
 		State:     json.RawMessage("{}"),
 		Players:   []PlayerSession{},
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 }
 
@@ -81,6 +84,7 @@ func (s *GameSession) Start() error {
 	now := time.Now().UTC()
 	s.Status = StatusInProgress
 	s.StartedAt = &now
+	s.UpdatedAt = now
 	return nil
 }
 
@@ -93,6 +97,7 @@ func (s *GameSession) Finish(scores map[int64]int) error {
 	now := time.Now().UTC()
 	s.Status = StatusFinished
 	s.EndedAt = &now
+	s.UpdatedAt = now
 	for i, p := range s.Players {
 		if score, ok := scores[p.TelegramUserID]; ok {
 			s.Players[i].Score = score
